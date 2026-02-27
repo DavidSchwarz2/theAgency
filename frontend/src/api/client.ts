@@ -152,3 +152,7 @@ export function checkConflicts(workingDir: string): Promise<Pipeline[]> {
   const params = new URLSearchParams({ working_dir: workingDir })
   return apiFetch<Pipeline[]>(`/pipelines/conflicts?${params.toString()}`)
 }
+
+export function restartPipeline(id: number): Promise<Pipeline> {
+  return apiFetch<Pipeline>(`/pipelines/${id}/restart`, { method: 'POST' })
+}

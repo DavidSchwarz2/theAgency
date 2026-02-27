@@ -1,6 +1,7 @@
 """REST API router for pipeline management."""
 
 import asyncio
+import collections.abc
 import json
 from datetime import UTC, datetime
 from typing import Annotated
@@ -44,6 +45,49 @@ def _format_issue_context(issue: GitHubIssue) -> str:
     """Format a GitHubIssue into a Markdown context block for prompt prepending."""
     labels_part = ("\n\nLabels: " + ", ".join(issue.labels)) if issue.labels else ""
     return f"## GitHub Issue #{issue.number}: {issue.title}\n\n" + (issue.body or "") + labels_part
+
+
+def _launch_pipeline_background_task(
+    pipeline_id: int,
+    app_state: object,
+    client: OpenCodeClient,
+    registry: "AgentRegistry",
+    run_fn: "collections.abc.Callable[[PipelineRunner, Pipeline], collections.abc.Coroutine[object, object, None]]",
+    log_event: str,
+) -> None:
+    """Create and register an asyncio background task for a pipeline run.
+
+    Opens a fresh DB session, fetches the pipeline, wires a PipelineRunner, then calls
+    `run_fn(runner, pipeline)` to dispatch the appropriate execution method
+    (run_pipeline or resume_pipeline). Handles active_runners and approval_events cleanup.
+
+    Must only be called from within a running event loop (i.e., inside a FastAPI handler).
+    """
+    db_session_factory = app_state.db_session_factory  # type: ignore[attr-defined]
+    step_timeout: float = app_state.step_timeout  # type: ignore[attr-defined]
+
+    async def _run() -> None:
+        async with db_session_factory() as bg_db:
+            result = await bg_db.execute(select(Pipeline).where(Pipeline.id == pipeline_id))
+            bg_pipeline = result.scalar_one()
+            runner = PipelineRunner(
+                client=client,
+                db=bg_db,
+                step_timeout=step_timeout,
+                registry=registry,
+                approval_events=app_state.approval_events,  # type: ignore[attr-defined]
+            )
+            app_state.active_runners[pipeline_id] = runner  # type: ignore[attr-defined]
+            try:
+                await run_fn(runner, bg_pipeline)
+            finally:
+                app_state.active_runners.pop(pipeline_id, None)  # type: ignore[attr-defined]
+                app_state.approval_events.pop(pipeline_id, None)  # type: ignore[attr-defined]
+                logger.info(log_event, pipeline_id=pipeline_id)
+
+    task = asyncio.create_task(_run())
+    app_state.pipeline_tasks[pipeline_id] = task  # type: ignore[attr-defined]
+    task.add_done_callback(lambda t: app_state.pipeline_tasks.pop(pipeline_id, None))  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -175,35 +219,20 @@ async def create_pipeline(
     # Extract long-lived references before spawning the task — the Request object
     # is ASGI-scoped and must not be accessed after the response is sent.
     app_state = request.app.state
-    db_session_factory = app_state.db_session_factory
-    step_timeout: float = app_state.step_timeout
 
     # Create an approval event for this pipeline before launching the background task.
-    approval_event: asyncio.Event = asyncio.Event()
-    app_state.approval_events[pipeline_id] = approval_event
+    app_state.approval_events[pipeline_id] = asyncio.Event()
 
-    async def _run_in_background() -> None:
-        async with db_session_factory() as bg_db:
-            result = await bg_db.execute(select(Pipeline).where(Pipeline.id == pipeline_id))
-            bg_pipeline = result.scalar_one()
-            runner = PipelineRunner(
-                client=client,
-                db=bg_db,
-                step_timeout=step_timeout,
-                registry=effective_registry,
-                approval_events=app_state.approval_events,
-            )
-            app_state.active_runners[pipeline_id] = runner
-            try:
-                await runner.run_pipeline(bg_pipeline, template)
-            finally:
-                app_state.active_runners.pop(pipeline_id, None)
-                app_state.approval_events.pop(pipeline_id, None)
-                logger.info("pipeline_background_task_done", pipeline_id=pipeline_id)
+    captured_template = template
 
-    task = asyncio.create_task(_run_in_background())
-    app_state.pipeline_tasks[pipeline_id] = task
-    task.add_done_callback(lambda t: app_state.pipeline_tasks.pop(pipeline_id, None))
+    _launch_pipeline_background_task(
+        pipeline_id=pipeline_id,
+        app_state=app_state,
+        client=client,
+        registry=effective_registry,
+        run_fn=lambda runner, p: runner.run_pipeline(p, captured_template),
+        log_event="pipeline_background_task_done",
+    )
 
     return PipelineResponse.model_validate(pipeline)
 
@@ -329,6 +358,53 @@ async def abort_pipeline(
     pipeline.status = PipelineStatus.failed
     pipeline.updated_at = datetime.now(UTC)
     await db.commit()
+
+    return PipelineResponse.model_validate(pipeline)
+
+
+# ---------------------------------------------------------------------------
+# POST /pipelines/{id}/restart — restart a failed pipeline
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{pipeline_id}/restart", response_model=PipelineResponse)
+async def restart_pipeline(
+    pipeline_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    registry: Annotated[AgentRegistry, Depends(get_registry)],
+    client: Annotated[OpenCodeClient, Depends(get_opencode_client)],
+    request: Request,
+) -> PipelineResponse:
+    """Restart a failed pipeline from the first non-completed step. Returns 409 if not failed."""
+    result = await db.execute(select(Pipeline).where(Pipeline.id == pipeline_id))
+    pipeline = result.scalar_one_or_none()
+    if pipeline is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pipeline not found")
+
+    if pipeline.status != PipelineStatus.failed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Pipeline is not failed (status={pipeline.status})",
+        )
+
+    pipeline.status = PipelineStatus.running
+    pipeline.updated_at = datetime.now(UTC)
+    await db.commit()
+
+    app_state = request.app.state
+    # Create an approval event for this pipeline before launching the background task.
+    app_state.approval_events[pipeline_id] = asyncio.Event()
+
+    _launch_pipeline_background_task(
+        pipeline_id=pipeline_id,
+        app_state=app_state,
+        client=client,
+        registry=registry,
+        # template=None: resume_pipeline does not use the template; it reconstructs
+        # the prompt from stored handoff records in the database.
+        run_fn=lambda runner, p: runner.resume_pipeline(p, template=None),
+        log_event="pipeline_restart_task_done",
+    )
 
     return PipelineResponse.model_validate(pipeline)
 

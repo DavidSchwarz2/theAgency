@@ -1200,3 +1200,122 @@ class TestConflictsEndpoint:
         response = await client.get("/pipelines/conflicts?working_dir=/foo")
         assert response.status_code == 200
         assert response.json() == []
+
+
+# ---------------------------------------------------------------------------
+# Tests for POST /pipelines/{id}/restart
+# ---------------------------------------------------------------------------
+
+
+class TestRestartPipeline:
+    """Tests for the POST /pipelines/{id}/restart endpoint."""
+
+    async def _seed_failed_pipeline(self, session_factory) -> int:
+        """Insert a failed pipeline with one failed step and return its id."""
+        now = datetime.now(UTC)
+        async with session_factory() as session:
+            pipeline = Pipeline(
+                title="Failed Pipeline",
+                template="quick_fix",
+                prompt="original prompt",
+                working_dir=None,
+                status=PipelineStatus.failed,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(pipeline)
+            await session.flush()
+            step = Step(
+                pipeline_id=pipeline.id,
+                agent_name="developer",
+                order_index=0,
+                status=StepStatus.failed,
+            )
+            session.add(step)
+            await session.commit()
+            await session.refresh(pipeline)
+            return pipeline.id
+
+    async def test_restart_failed_pipeline_returns_200_and_running(self, test_client):
+        """POST /pipelines/{id}/restart on a failed pipeline returns 200 with status=running."""
+        client, session_factory = test_client
+        pipeline_id = await self._seed_failed_pipeline(session_factory)
+
+        with patch("app.routers.pipelines.PipelineRunner") as mock_runner_cls:
+            mock_runner = MagicMock()
+            mock_runner.resume_pipeline = AsyncMock(return_value=None)
+            mock_runner_cls.return_value = mock_runner
+
+            response = await client.post(f"/pipelines/{pipeline_id}/restart")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["id"] == pipeline_id
+        assert data["status"] == "running"
+
+    async def test_restart_non_failed_pipeline_returns_409(self, test_client):
+        """POST /pipelines/{id}/restart on a running pipeline returns 409."""
+        client, session_factory = test_client
+        now = datetime.now(UTC)
+        async with session_factory() as session:
+            pipeline = Pipeline(
+                title="Running Pipeline",
+                template="quick_fix",
+                prompt="test",
+                working_dir=None,
+                status=PipelineStatus.running,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(pipeline)
+            await session.commit()
+            await session.refresh(pipeline)
+            pipeline_id = pipeline.id
+
+        response = await client.post(f"/pipelines/{pipeline_id}/restart")
+        assert response.status_code == 409
+
+    async def test_restart_nonexistent_pipeline_returns_404(self, test_client):
+        """POST /pipelines/9999/restart returns 404 when pipeline does not exist."""
+        client, _ = test_client
+        response = await client.post("/pipelines/9999/restart")
+        assert response.status_code == 404
+
+    async def test_restart_done_pipeline_returns_409(self, test_client):
+        """POST /pipelines/{id}/restart on a done pipeline also returns 409."""
+        client, session_factory = test_client
+        now = datetime.now(UTC)
+        async with session_factory() as session:
+            pipeline = Pipeline(
+                title="Done Pipeline",
+                template="quick_fix",
+                prompt="test",
+                working_dir=None,
+                status=PipelineStatus.done,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(pipeline)
+            await session.commit()
+            await session.refresh(pipeline)
+            pipeline_id = pipeline.id
+
+        response = await client.post(f"/pipelines/{pipeline_id}/restart")
+        assert response.status_code == 409
+
+    async def test_restart_sets_pipeline_status_to_running_in_db(self, test_client):
+        """After restart, the pipeline's status in the DB is updated to running."""
+        client, session_factory = test_client
+        pipeline_id = await self._seed_failed_pipeline(session_factory)
+
+        with patch("app.routers.pipelines.PipelineRunner") as mock_runner_cls:
+            mock_runner = MagicMock()
+            mock_runner.resume_pipeline = AsyncMock(return_value=None)
+            mock_runner_cls.return_value = mock_runner
+
+            await client.post(f"/pipelines/{pipeline_id}/restart")
+
+        async with session_factory() as session:
+            pipeline = await session.get(Pipeline, pipeline_id)
+            assert pipeline is not None
+            assert pipeline.status == PipelineStatus.running

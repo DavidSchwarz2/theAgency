@@ -2,6 +2,7 @@ import { useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import type { Pipeline, PipelineStatus, Step, StepStatus } from '@/types/api'
 import { useApprovalMutation } from '@/hooks/useApprovalMutation'
+import { useRestartMutation } from '@/hooks/useRestartMutation'
 
 // ---------------------------------------------------------------------------
 // Status badge helpers
@@ -74,6 +75,31 @@ function StepRow({ step }: { step: Step }) {
             </div>
           )}
         </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Restart button (shown on failed pipelines)
+// ---------------------------------------------------------------------------
+
+function RestartButton({ pipelineId }: { pipelineId: number }) {
+  const restart = useRestartMutation(pipelineId)
+
+  return (
+    <div className="mt-3 p-3 rounded bg-red-950 border border-red-800">
+      <p className="text-red-300 text-xs font-semibold mb-2">Pipeline failed</p>
+      <button
+        className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600 text-white text-xs disabled:opacity-50"
+        disabled={restart.isPending}
+        aria-label="Restart pipeline"
+        onClick={() => restart.mutate()}
+      >
+        {restart.isPending ? 'Restarting…' : 'Restart'}
+      </button>
+      {restart.error instanceof Error && (
+        <p className="text-red-400 text-xs mt-1">{restart.error.message}</p>
       )}
     </div>
   )
@@ -166,6 +192,10 @@ export default function PipelineCard({ pipeline }: { pipeline: Pipeline & { step
 
       {pipeline.status === 'waiting_for_approval' && (
         <ApprovalBanner pipelineId={pipeline.id} />
+      )}
+
+      {pipeline.status === 'failed' && (
+        <RestartButton pipelineId={pipeline.id} />
       )}
 
       <p className="text-gray-600 text-xs mt-2">
