@@ -68,6 +68,7 @@ class StepStatusResponse(BaseModel):
     model: str | None = None
     started_at: datetime | None
     finished_at: datetime | None
+    error_message: str | None = None
     latest_handoff: HandoffResponse | None = None
 
 

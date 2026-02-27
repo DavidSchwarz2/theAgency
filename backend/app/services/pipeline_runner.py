@@ -99,12 +99,12 @@ class PipelineRunner:
         except TimeoutError:
             logger.warning("step_timeout", step_id=step.id, timeout=self._step_timeout)
             await self._client.abort_session(session_id)
-            await self._persist_failure(step)
+            await self._persist_failure(step, error=f"Step timed out after {self._step_timeout}s")
             raise StepExecutionError(f"Step {step.id} timed out after {self._step_timeout}s") from None
 
         except OpenCodeClientError as exc:
             logger.warning("step_client_error", step_id=step.id, error=str(exc))
-            await self._persist_failure(step)
+            await self._persist_failure(step, error=str(exc))
             raise StepExecutionError(f"Step {step.id} failed: {exc}") from exc
 
         finally:
@@ -178,9 +178,17 @@ class PipelineRunner:
         await self._db.commit()
         return handoff_schema
 
-    async def _persist_failure(self, step: Step) -> None:
+    async def _persist_failure(self, step: Step, error: str | None = None) -> None:
         step.status = StepStatus.failed
         step.finished_at = datetime.now(UTC)
+        step.error_message = error
+        audit_failed = AuditEvent(
+            pipeline_id=step.pipeline_id,
+            step_id=step.id,
+            event_type="step_failed",
+            payload_json=json.dumps({"error_message": error}),
+        )
+        self._db.add(audit_failed)
         await self._db.commit()
 
     async def _mark_pipeline_failed(self, pipeline: Pipeline, step: Step | None = None) -> None:
@@ -390,7 +398,8 @@ class PipelineRunner:
                     current_prompt = handoff_schema.to_context_header(agent_name=step.agent_name)
                 else:
                     current_prompt = output_text
-            except StepExecutionError:
+            except StepExecutionError as exc:
+                logger.error("step_execution_error", pipeline_id=pipeline.id, step_id=step.id, error=str(exc))
                 await self._mark_pipeline_failed(pipeline)
                 return
 

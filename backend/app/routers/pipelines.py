@@ -80,6 +80,18 @@ def _launch_pipeline_background_task(
             app_state.active_runners[pipeline_id] = runner  # type: ignore[attr-defined]
             try:
                 await run_fn(runner, bg_pipeline)
+            except Exception:
+                logger.error("pipeline_task_unhandled_error", pipeline_id=pipeline_id, exc_info=True)
+                try:
+                    # Only overwrite the status if the pipeline was not already transitioned
+                    # to a terminal state by _execute_steps / _mark_pipeline_failed — e.g. when
+                    # an unexpected exception fires after the runner has already marked it done.
+                    if bg_pipeline.status not in (PipelineStatus.done, PipelineStatus.failed):
+                        bg_pipeline.status = PipelineStatus.failed
+                        bg_pipeline.updated_at = datetime.now(UTC)
+                        await bg_db.commit()
+                except Exception:
+                    logger.error("pipeline_task_status_update_failed", pipeline_id=pipeline_id, exc_info=True)
             finally:
                 app_state.active_runners.pop(pipeline_id, None)  # type: ignore[attr-defined]
                 app_state.approval_events.pop(pipeline_id, None)  # type: ignore[attr-defined]
@@ -307,6 +319,7 @@ async def get_pipeline(
                 model=step.model,
                 started_at=step.started_at,
                 finished_at=step.finished_at,
+                error_message=step.error_message,
                 latest_handoff=handoff_resp,
             )
         )

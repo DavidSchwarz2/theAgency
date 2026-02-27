@@ -2,13 +2,16 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import Any
+from typing import Any, TypeVar
 
 import httpx
+import pydantic
 
 from app.adapters.opencode_models import MessageResponse, SessionInfo, TodoItem
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 
 class OpenCodeClientError(Exception):
@@ -55,22 +58,22 @@ class OpenCodeClient:
             body["title"] = title
         resp = await self._http.post("/session", json=body)
         self._raise_for_status(resp)
-        return SessionInfo.model_validate(resp.json())
+        return self._parse(resp, SessionInfo)
 
     async def list_sessions(self) -> list[SessionInfo]:
         resp = await self._http.get("/session")
         self._raise_for_status(resp)
-        return [SessionInfo.model_validate(item) for item in resp.json()]
+        return self._parse_list(resp, SessionInfo)
 
     async def get_session(self, session_id: str) -> SessionInfo:
         resp = await self._http.get(f"/session/{session_id}")
         self._raise_for_status(resp)
-        return SessionInfo.model_validate(resp.json())
+        return self._parse(resp, SessionInfo)
 
     async def delete_session(self, session_id: str) -> bool:
         resp = await self._http.delete(f"/session/{session_id}")
         self._raise_for_status(resp)
-        return bool(resp.json())
+        return self._parse_bool(resp)
 
     # ------------------------------------------------------------------
     # Messages
@@ -90,7 +93,7 @@ class OpenCodeClient:
             body["model"] = model
         resp = await self._http.post(f"/session/{session_id}/message", json=body)
         self._raise_for_status(resp)
-        return MessageResponse.model_validate(resp.json())
+        return self._parse(resp, MessageResponse)
 
     async def send_message_async(
         self,
@@ -107,7 +110,7 @@ class OpenCodeClient:
     async def abort_session(self, session_id: str) -> bool:
         resp = await self._http.post(f"/session/{session_id}/abort")
         self._raise_for_status(resp)
-        return bool(resp.json())
+        return self._parse_bool(resp)
 
     # ------------------------------------------------------------------
     # Todos
@@ -116,7 +119,7 @@ class OpenCodeClient:
     async def get_todos(self, session_id: str) -> list[TodoItem]:
         resp = await self._http.get(f"/session/{session_id}/todo")
         self._raise_for_status(resp)
-        return [TodoItem.model_validate(item) for item in resp.json()]
+        return self._parse_list(resp, TodoItem)
 
     # ------------------------------------------------------------------
     # SSE (Milestone 3)
@@ -192,3 +195,66 @@ class OpenCodeClient:
                 f"OpenCode API error {resp.status_code}: {resp.text}",
                 status_code=resp.status_code,
             )
+
+    def _parse(self, resp: httpx.Response, model: type[_T]) -> _T:
+        """Parse the response body as JSON, then validate against a Pydantic model.
+
+        Raises OpenCodeClientError for both empty/invalid JSON bodies and schema
+        mismatches, so callers don't need to handle json.JSONDecodeError or
+        pydantic.ValidationError individually.
+        """
+        try:
+            data = resp.json()
+        except json.JSONDecodeError as exc:
+            raise OpenCodeClientError(
+                f"OpenCode returned non-JSON body (status {resp.status_code}): {exc}",
+                status_code=resp.status_code,
+            ) from exc
+        try:
+            return model.model_validate(data)  # type: ignore[attr-defined]
+        except pydantic.ValidationError as exc:
+            raise OpenCodeClientError(
+                f"OpenCode response schema mismatch: {exc}",
+                status_code=resp.status_code,
+            ) from exc
+
+    def _parse_list(self, resp: httpx.Response, model: type[_T]) -> list[_T]:
+        """Parse the response body as a JSON array, validating each element."""
+        try:
+            items = resp.json()
+        except json.JSONDecodeError as exc:
+            raise OpenCodeClientError(
+                f"OpenCode returned non-JSON body (status {resp.status_code}): {exc}",
+                status_code=resp.status_code,
+            ) from exc
+        if not isinstance(items, list):
+            raise OpenCodeClientError(
+                f"OpenCode returned unexpected shape — expected array, got {type(items).__name__} (status {resp.status_code})",
+                status_code=resp.status_code,
+            )
+        result: list[_T] = []
+        for item in items:
+            try:
+                result.append(model.model_validate(item))  # type: ignore[attr-defined]
+            except pydantic.ValidationError as exc:
+                raise OpenCodeClientError(
+                    f"OpenCode response schema mismatch: {exc}",
+                    status_code=resp.status_code,
+                ) from exc
+        return result
+
+    def _parse_bool(self, resp: httpx.Response) -> bool:
+        """Parse the response body as a strict boolean JSON value."""
+        try:
+            value = resp.json()
+        except json.JSONDecodeError as exc:
+            raise OpenCodeClientError(
+                f"OpenCode returned non-JSON body (status {resp.status_code}): {exc}",
+                status_code=resp.status_code,
+            ) from exc
+        if not isinstance(value, bool):
+            raise OpenCodeClientError(
+                f"OpenCode returned unexpected shape — expected boolean, got {type(value).__name__} (status {resp.status_code})",
+                status_code=resp.status_code,
+            )
+        return value

@@ -237,3 +237,73 @@ class TestStreamEvents:
 
         # At least one event received and loop exited
         assert len(received) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Issue #22 — all failure modes wrapped in OpenCodeClientError
+# ---------------------------------------------------------------------------
+
+
+class TestClientErrorWrapping:
+    """json.JSONDecodeError, httpx.HTTPError, and pydantic.ValidationError are all wrapped."""
+
+    async def test_send_message_wraps_empty_body(self):
+        """An empty 2xx body (JSONDecodeError) is wrapped in OpenCodeClientError."""
+        with respx.mock(base_url=BASE_URL) as mock:
+            mock.post("/session/s1/message").respond(200, content=b"")
+            async with OpenCodeClient(base_url=BASE_URL) as client:
+                with pytest.raises(OpenCodeClientError) as exc_info:
+                    await client.send_message("s1", "Hello")
+        assert exc_info.value.status_code == 200
+
+    async def test_send_message_wraps_invalid_schema(self):
+        """A 2xx body that doesn't match the expected schema is wrapped in OpenCodeClientError."""
+        with respx.mock(base_url=BASE_URL) as mock:
+            mock.post("/session/s1/message").respond(200, json={"unexpected": "shape"})
+            async with OpenCodeClient(base_url=BASE_URL) as client:
+                with pytest.raises(OpenCodeClientError):
+                    await client.send_message("s1", "Hello")
+
+    async def test_create_session_wraps_empty_body(self):
+        """An empty 2xx body in create_session is wrapped in OpenCodeClientError."""
+        with respx.mock(base_url=BASE_URL) as mock:
+            mock.post("/session").respond(200, content=b"")
+            async with OpenCodeClient(base_url=BASE_URL) as client:
+                with pytest.raises(OpenCodeClientError) as exc_info:
+                    await client.create_session()
+        assert exc_info.value.status_code == 200
+
+    async def test_get_session_wraps_empty_body(self):
+        """An empty 2xx body in get_session is wrapped in OpenCodeClientError."""
+        with respx.mock(base_url=BASE_URL) as mock:
+            mock.get("/session/s1").respond(200, content=b"")
+            async with OpenCodeClient(base_url=BASE_URL) as client:
+                with pytest.raises(OpenCodeClientError) as exc_info:
+                    await client.get_session("s1")
+        assert exc_info.value.status_code == 200
+
+    async def test_get_todos_wraps_empty_body(self):
+        """An empty 2xx body in get_todos is wrapped in OpenCodeClientError."""
+        with respx.mock(base_url=BASE_URL) as mock:
+            mock.get("/session/s1/todo").respond(200, content=b"")
+            async with OpenCodeClient(base_url=BASE_URL) as client:
+                with pytest.raises(OpenCodeClientError) as exc_info:
+                    await client.get_todos("s1")
+        assert exc_info.value.status_code == 200
+
+    async def test_get_todos_wraps_invalid_item_schema(self):
+        """A list where an item doesn't match TodoItem schema is wrapped in OpenCodeClientError."""
+        with respx.mock(base_url=BASE_URL) as mock:
+            mock.get("/session/s1/todo").respond(200, json=[{"wrong": "field"}])
+            async with OpenCodeClient(base_url=BASE_URL) as client:
+                with pytest.raises(OpenCodeClientError):
+                    await client.get_todos("s1")
+
+    async def test_list_sessions_wraps_non_array_response(self):
+        """A JSON object instead of array from list_sessions is wrapped in OpenCodeClientError."""
+        with respx.mock(base_url=BASE_URL) as mock:
+            mock.get("/session").respond(200, json={"unexpected": "object"})
+            async with OpenCodeClient(base_url=BASE_URL) as client:
+                with pytest.raises(OpenCodeClientError) as exc_info:
+                    await client.list_sessions()
+        assert "expected array" in str(exc_info.value)

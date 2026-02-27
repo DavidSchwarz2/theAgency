@@ -1,15 +1,17 @@
 """TDD tests for PipelineRunner service (Milestone 1 & 2)."""
 
 import asyncio
+import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy import select as sa_select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.adapters.opencode_client import OpenCodeClient, OpenCodeClientError
 from app.adapters.opencode_models import MessageInfo, MessageResponse, Part, SessionInfo
-from app.models import Base, Handoff, Pipeline, PipelineStatus, Step, StepStatus
+from app.models import AuditEvent, Base, Handoff, Pipeline, PipelineStatus, Step, StepStatus
 from app.schemas.registry import AgentProfile, AgentStep, ApprovalStep, PipelineTemplate
 
 # ---------------------------------------------------------------------------
@@ -1396,3 +1398,91 @@ class TestApprovalStepReminder:
                 )
             )
             assert result.scalar_one_or_none() is None, "Unexpected approval_reminder event"
+
+
+# ---------------------------------------------------------------------------
+# Issue #22 — error_message persisted on step failure
+# ---------------------------------------------------------------------------
+
+
+class TestErrorMessageOnFailure:
+    """_persist_failure stores the error message on the step and writes a step_failed audit event."""
+
+    async def test_persist_failure_stores_error_message(
+        self, db_session: AsyncSession, mock_client: AsyncMock, pipeline_and_step
+    ):
+        """When run_step catches an OpenCodeClientError, the step gets error_message set."""
+        from app.services.pipeline_runner import PipelineRunner, StepExecutionError
+
+        _, step = pipeline_and_step
+        mock_client.send_message.side_effect = OpenCodeClientError("Agent exploded")
+        runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30)
+
+        with pytest.raises(StepExecutionError):
+            await runner.run_step(step, make_agent_profile(), "Do something")
+
+        assert step.status == StepStatus.failed
+        assert step.error_message is not None
+        assert "Agent exploded" in step.error_message
+
+    async def test_persist_failure_stores_timeout_message(
+        self, db_session: AsyncSession, mock_client: AsyncMock, pipeline_and_step
+    ):
+        """When run_step times out, the step gets a timeout error_message."""
+        from app.services.pipeline_runner import PipelineRunner, StepExecutionError
+
+        _, step = pipeline_and_step
+        mock_client.send_message.side_effect = TimeoutError()
+        runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30)
+
+        with pytest.raises(StepExecutionError):
+            await runner.run_step(step, make_agent_profile(), "Do something")
+
+        assert step.status == StepStatus.failed
+        assert step.error_message is not None
+        assert "timed out" in step.error_message
+
+    async def test_persist_failure_writes_step_failed_audit_event(
+        self, db_session: AsyncSession, mock_client: AsyncMock, pipeline_and_step
+    ):
+        """_persist_failure writes a step_failed AuditEvent with the error message in its payload."""
+        from app.services.pipeline_runner import PipelineRunner, StepExecutionError
+
+        pipeline, step = pipeline_and_step
+        mock_client.send_message.side_effect = OpenCodeClientError("boom")
+        runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30)
+
+        with pytest.raises(StepExecutionError):
+            await runner.run_step(step, make_agent_profile(), "Do something")
+
+        result = await db_session.execute(
+            sa_select(AuditEvent).where(
+                AuditEvent.pipeline_id == pipeline.id,
+                AuditEvent.event_type == "step_failed",
+            )
+        )
+        event = result.scalar_one_or_none()
+        assert event is not None
+        assert event.payload_json is not None
+        payload = json.loads(event.payload_json)
+        assert "error_message" in payload
+        assert "boom" in payload["error_message"]
+
+    async def test_run_step_no_error_message_on_success(
+        self, db_session: AsyncSession, mock_client: AsyncMock, pipeline_and_step
+    ):
+        """A successful run_step does NOT set error_message on the step.
+
+        The step's error_message starts as None and must remain None after success —
+        _persist_success must not inadvertently write to that field.
+        """
+        from app.services.pipeline_runner import PipelineRunner
+
+        _, step = pipeline_and_step
+        # mock_client fixture already returns a successful message response
+        runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30)
+
+        await runner.run_step(step, make_agent_profile(), "Do something")
+
+        assert step.status == StepStatus.done
+        assert step.error_message is None

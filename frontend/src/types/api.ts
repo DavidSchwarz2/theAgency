@@ -20,6 +20,7 @@ export interface Step {
   model: string | null
   started_at: string | null
   finished_at: string | null
+  error_message: string | null
   latest_handoff: HandoffResponse | null
 }
 

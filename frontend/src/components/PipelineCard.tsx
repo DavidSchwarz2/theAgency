@@ -87,6 +87,9 @@ function StepRow({ step, liveLines }: { step: Step; liveLines?: string[] }) {
           </button>
         )}
       </div>
+      {step.status === 'failed' && step.error_message && (
+        <p className="mt-0.5 ml-2 text-red-400 text-xs font-mono">{step.error_message}</p>
+      )}
       {step.status === 'running' && liveLines && liveLines.length > 0 && (
         <LiveOutputPanel lines={liveLines} />
       )}

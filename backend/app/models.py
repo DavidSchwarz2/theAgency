@@ -66,6 +66,7 @@ class Step(Base):
     model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     pipeline: Mapped["Pipeline"] = relationship("Pipeline", back_populates="steps")
     handoffs: Mapped[list["Handoff"]] = relationship("Handoff", back_populates="step", cascade="all, delete-orphan")
