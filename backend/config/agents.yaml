@@ -1,0 +1,36 @@
+agents:
+  - name: product_owner
+    description: >-
+      Turns a feature request into a structured requirement document
+      with acceptance criteria and scope boundaries.
+    opencode_agent: product-owner
+  - name: architect
+    description: >-
+      Designs the technical solution: module boundaries, data flow,
+      API contracts, and integration points.
+    opencode_agent: architect
+  - name: designer
+    description: >-
+      Creates UI/UX specifications and component designs for
+      frontend features.
+    opencode_agent: designer
+  - name: developer
+    description: >-
+      Implements the feature according to the architecture and
+      design specs, following TDD.
+    opencode_agent: developer
+  - name: senior_reviewer
+    description: >-
+      Reviews the implementation for correctness, code quality,
+      and adherence to conventions.
+    opencode_agent: senior-reviewer
+  - name: issue_creator
+    description: >-
+      Creates well-structured GitHub issues from vague feature
+      requests or bug reports.
+    opencode_agent: issue-creator
+  - name: qa
+    description: >-
+      Validates the implementation against acceptance criteria,
+      runs tests, and verifies edge cases.
+    opencode_agent: qa

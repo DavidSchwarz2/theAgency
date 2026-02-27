@@ -1,0 +1,34 @@
+pipelines:
+  - name: full_feature
+    description: >-
+      Full pipeline from requirement analysis to QA for a new feature.
+      All seven agents run in sequence.
+    steps:
+      - agent: product_owner
+        description: Analyse the feature request and produce a requirements document.
+      - agent: architect
+        description: Design the technical solution based on requirements.
+      - agent: designer
+        description: Create UI/UX specifications if the feature has a frontend component.
+      - agent: developer
+        description: Implement the feature following TDD.
+      - agent: senior_reviewer
+        description: Review the implementation for quality and correctness.
+      - agent: qa
+        description: Validate the feature against acceptance criteria.
+      - agent: issue_creator
+        description: Create follow-up issues for discovered gaps or improvements.
+  - name: quick_fix
+    description: >-
+      Fast path for small bug fixes. Developer implements, reviewer validates.
+    steps:
+      - agent: developer
+        description: Implement the fix.
+      - agent: senior_reviewer
+        description: Review the fix.
+  - name: issue_only
+    description: >-
+      Create a structured GitHub issue without implementation.
+    steps:
+      - agent: issue_creator
+        description: Analyse the request and create a well-structured GitHub issue.

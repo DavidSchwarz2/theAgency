@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
+import { AgentList } from '@/components/AgentList'
+
 type HeartbeatEvent = { type: string; ts: number }
 
 function App() {
@@ -55,6 +57,11 @@ function App() {
             ))}
           </ul>
         )}
+      </section>
+
+      <section className="mt-8">
+        <h2 className="text-sm uppercase tracking-widest text-gray-500 mb-3">Agents</h2>
+        <AgentList />
       </section>
     </div>
   )

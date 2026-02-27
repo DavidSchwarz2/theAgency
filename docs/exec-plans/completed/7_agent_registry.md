@@ -23,16 +23,28 @@ appears in the API response.
 
 - [x] (2026-02-27 14:00Z) ExecPlan drafted
 - [x] (2026-02-27 15:00Z) ExecPlan revised: all 9 review findings incorporated (see Decision Log)
-- [ ] Milestone 1: Pydantic schema + AgentRegistry service + YAML configs (TDD)
-- [ ] Milestone 2: Hot-reload via file watcher
-- [ ] Milestone 3: REST router (`/registry/agents`, `/registry/pipelines`)
-- [ ] Milestone 4: Dashboard integration (agents list visible in frontend)
-- [ ] Post-impl code-quality review
-- [ ] ExecPlan finalized: outcomes written, plan moved to completed/
+- [x] (2026-02-27 16:00Z) Milestone 1: Pydantic schema + AgentRegistry service + YAML configs (TDD) — 11 tests
+- [x] (2026-02-27 17:00Z) Milestone 2: Hot-reload via file watcher — 2 tests
+- [x] (2026-02-27 17:30Z) Milestone 3: REST router (`/registry/agents`, `/registry/pipelines`) — 4 tests
+- [x] (2026-02-27 18:00Z) Milestone 4: Dashboard integration (agents list visible in frontend) — tsc clean
+- [x] (2026-02-27 18:30Z) Post-impl code-quality review (round 1): 2 MUST FIX + 5 SHOULD FIX resolved
+- [x] (2026-02-27 19:00Z) Post-impl code-quality review (round 2): 2 MUST FIX + 5 SHOULD FIX resolved
+- [x] (2026-02-27 19:30Z) ExecPlan finalized: outcomes written, plan moved to completed/
 
 ## Surprises & Discoveries
 
-_nothing yet_
+- `model_validate(from_attributes=True)` requires `ConfigDict(from_attributes=True)` on the
+  model class — the kwarg alone is not enough for consistent behavior.
+- `get_registry` FastAPI dependency belongs in the router module (not services) to keep
+  services framework-agnostic per hexagonal architecture.
+- `asyncio.to_thread(registry.reload)` is needed in `watch_and_reload` to avoid blocking the
+  event loop with synchronous file I/O during hot-reload.
+- `app.dependency_overrides[get_registry]` is the proper test pattern instead of directly
+  mutating `app.state` — prevents test state leaking.
+- Shared test fixtures (VALID_AGENTS, VALID_PIPELINES, write_yaml, make_registry) were
+  extracted to `conftest.py` to reduce duplication across test files.
+- The `@/` path alias convention documented in `frontend.md` was not actually configured in
+  tsconfig — we added it to both `tsconfig.app.json` and `vite.config.ts`.
 
 ## Decision Log
 
@@ -124,7 +136,35 @@ _nothing yet_
 
 ## Outcomes & Retrospective
 
-_to be filled after completion_
+**Delivered:** All 4 milestones complete. 17 new tests (13 service + 4 router), all 44 total
+tests passing, lint clean, frontend type-check clean.
+
+**What went well:**
+- TDD drove clean separation between schema validation, service logic, and routing.
+- `extra="forbid"` on Pydantic models immediately caught YAML typos during development.
+- The `watch_and_reload` standalone function pattern kept the registry class focused on
+  in-memory state, making it trivially testable without file-watching complexity.
+- Two rounds of code-quality review caught real issues: singleton convention gap,
+  missing sync I/O documentation, redundant guard clauses, unconfigured path alias.
+
+**What could be better:**
+- The ExecPlan was very detailed but some of the specifics (exact field names, test names)
+  were determined during TDD anyway. A slightly lighter plan would have been equally effective.
+- Settings singleton pattern is a known pre-existing tension with the "no singletons"
+  convention. We documented the exception rather than refactoring — acceptable for now but
+  should be revisited if more singletons appear.
+
+**Files delivered:**
+- `backend/app/schemas/__init__.py`, `backend/app/schemas/registry.py`
+- `backend/app/services/agent_registry.py`
+- `backend/app/routers/registry.py`
+- `backend/config/agents.yaml`, `backend/config/pipelines.yaml`
+- `backend/app/tests/conftest.py`, `backend/app/tests/test_agent_registry.py`,
+  `backend/app/tests/test_registry_router.py`
+- `frontend/src/hooks/useAgents.ts`, `frontend/src/components/AgentList.tsx`
+- Modified: `backend/app/main.py`, `backend/app/config/config.py`, `backend/pyproject.toml`,
+  `frontend/src/App.tsx`, `frontend/tsconfig.app.json`, `frontend/vite.config.ts`,
+  `docs/backend.md`
 
 ## Context and Orientation
 

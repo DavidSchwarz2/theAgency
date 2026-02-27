@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import subprocess
 from contextlib import asynccontextmanager
 
@@ -7,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config.config import settings
 from app.routers import events, health
+from app.routers import registry as registry_router
+from app.services.agent_registry import AgentRegistry, watch_and_reload
 
 structlog.configure(
     processors=[
@@ -31,7 +35,31 @@ async def lifespan(app: FastAPI):
         logger.error("migration_failed", stderr=result.stderr)
         raise RuntimeError(f"Alembic migration failed: {result.stderr}")
     logger.info("migrations_complete", stdout=result.stdout.strip())
+
+    # Initialize Agent Registry from YAML config
+    agent_registry = AgentRegistry(
+        agents_path=settings.agents_config_path,
+        pipelines_path=settings.pipelines_config_path,
+    )
+    app.state.registry = agent_registry
+
+    # Start file watcher for hot-reload
+    stop_event = asyncio.Event()
+    watcher_task = asyncio.create_task(
+        watch_and_reload(
+            agent_registry,
+            [settings.agents_config_path, settings.pipelines_config_path],
+            stop_event,
+        )
+    )
+
     yield
+
+    # Shutdown: stop file watcher
+    stop_event.set()
+    watcher_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await watcher_task
     logger.info("shutdown")
 
 
@@ -52,3 +80,4 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(events.router)
+app.include_router(registry_router.router)

@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     cors_origins: list[str] = ["http://localhost:3000"]
     opencode_base_port: int = 4096
+    agents_config_path: str = "config/agents.yaml"
+    pipelines_config_path: str = "config/pipelines.yaml"
 
 
 settings = Settings()

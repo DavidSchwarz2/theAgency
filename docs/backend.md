@@ -6,6 +6,7 @@ Python 3.11+
 ## Architecture
 - Hexagonal (Ports & Adapters) architecture. Core domain logic in `services/` with no external dependencies. Adapters for LLM providers, databases, etc. in `adapters/`.
 - Dependency injection via constructor parameters. No global state or singletons.
+  **Exception:** `Settings` from pydantic-settings is the single allowed module-level instance (`config/config.py`). It is immutable after creation and used as the configuration source during app startup.
 
 ## Logging
 
