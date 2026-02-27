@@ -1,0 +1,18 @@
+[tools]
+node = "22"
+python = "3.12"
+
+[tasks.deps]
+description = "Install all dependencies"
+run = """
+uv sync --project backend
+cd frontend && npm install
+"""
+
+[tasks.dev-backend]
+description = "Start backend dev server"
+run = "cd backend && uv run uvicorn app.main:app --reload --port 8000"
+
+[tasks.dev-frontend]
+description = "Start frontend dev server"
+run = "cd frontend && npm run dev"

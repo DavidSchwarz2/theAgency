@@ -1,0 +1,171 @@
+{
+  "version": "6.0",
+  "nxVersion": "20.8.4",
+  "pathMappings": {},
+  "nxJsonPlugins": [],
+  "fileMap": {
+    "projectFileMap": {},
+    "nonProjectFiles": [
+      {
+        "file": ".env.example",
+        "hash": "589056144303918510"
+      },
+      {
+        "file": ".gitignore",
+        "hash": "14958132880140161677"
+      },
+      {
+        "file": ".mise.toml",
+        "hash": "9214641090472705156"
+      },
+      {
+        "file": ".opencode/agents/code-quality.md",
+        "hash": "12795553655389092491"
+      },
+      {
+        "file": ".opencode/agents/quickfix.md",
+        "hash": "2439920000712157932"
+      },
+      {
+        "file": ".opencode/skills/agent-md/SKILL.md",
+        "hash": "11142809641288915524"
+      },
+      {
+        "file": ".opencode/skills/execplan/SKILL.md",
+        "hash": "14781314901135394734"
+      },
+      {
+        "file": ".opencode/skills/git-commit/SKILL.md",
+        "hash": "16652949744182215162"
+      },
+      {
+        "file": ".opencode/skills/github-issue/SKILL.md",
+        "hash": "2221042574618509542"
+      },
+      {
+        "file": ".opencode/skills/github-issue/references/templates.md",
+        "hash": "15966090934643688840"
+      },
+      {
+        "file": ".opencode/skills/link-workspace-packages/SKILL.md",
+        "hash": "6638592300654417978"
+      },
+      {
+        "file": ".opencode/skills/next-best-practices/SKILL.md",
+        "hash": "8673529692505712958"
+      },
+      {
+        "file": ".opencode/skills/next-best-practices/async-patterns.md",
+        "hash": "15453080842652703255"
+      },
+      {
+        "file": ".opencode/skills/next-best-practices/bundling.md",
+        "hash": "10458259717432987771"
+      },
+      {
+        "file": ".opencode/skills/next-best-practices/data-patterns.md",
+        "hash": "6528448593043638157"
+      },
+      {
+        "file": ".opencode/skills/next-best-practices/debug-tricks.md",
+        "hash": "14491920496450777057"
+      },
+      {
+        "file": ".opencode/skills/next-best-practices/directives.md",
+        "hash": "4654473735341847052"
+      },
+      {
+        "file": ".opencode/skills/next-best-practices/error-handling.md",
+        "hash": "982579933457763176"
+      },
+      {
+        "file": ".opencode/skills/next-best-practices/file-conventions.md",
+        "hash": "10369670430973632309"
+      },
+      {
+        "file": ".opencode/skills/next-best-practices/font.md",
+        "hash": "16448106011686155530"
+      },
+      {
+        "file": ".opencode/skills/next-best-practices/functions.md",
+        "hash": "4808334668131154654"
+      },
+      {
+        "file": ".opencode/skills/next-best-practices/hydration-error.md",
+        "hash": "15556630913845003821"
+      },
+      {
+        "file": ".opencode/skills/next-best-practices/image.md",
+        "hash": "3370016522172494369"
+      },
+      {
+        "file": ".opencode/skills/next-best-practices/metadata.md",
+        "hash": "2186559961897382736"
+      },
+      {
+        "file": ".opencode/skills/next-best-practices/parallel-routes.md",
+        "hash": "13540723206815284335"
+      },
+      {
+        "file": ".opencode/skills/next-best-practices/route-handlers.md",
+        "hash": "10865816198542917919"
+      },
+      {
+        "file": ".opencode/skills/next-best-practices/rsc-boundaries.md",
+        "hash": "5466800965669907657"
+      },
+      {
+        "file": ".opencode/skills/next-best-practices/runtime-selection.md",
+        "hash": "11408150060066998260"
+      },
+      {
+        "file": ".opencode/skills/next-best-practices/scripts.md",
+        "hash": "16792483075363067307"
+      },
+      {
+        "file": ".opencode/skills/next-best-practices/self-hosting.md",
+        "hash": "3036007937566744859"
+      },
+      {
+        "file": ".opencode/skills/next-best-practices/suspense-boundaries.md",
+        "hash": "16386265442900432783"
+      },
+      {
+        "file": ".opencode/skills/nx-run-tasks/SKILL.md",
+        "hash": "10723914446406921246"
+      },
+      {
+        "file": ".opencode/skills/nx-workspace/SKILL.md",
+        "hash": "14445122489349943565"
+      },
+      {
+        "file": ".opencode/skills/nx-workspace/references/AFFECTED.md",
+        "hash": "10577828056523124002"
+      },
+      {
+        "file": "AGENTS.md",
+        "hash": "6334173649008030671"
+      },
+      {
+        "file": "docs/backend.md",
+        "hash": "12432488529391828249"
+      },
+      {
+        "file": "docs/exec-plans/active/10_infra_python_backend.md",
+        "hash": "14817222976581521247"
+      },
+      {
+        "file": "docs/frontend.md",
+        "hash": "16904678176018959902"
+      },
+      {
+        "file": "nx.json",
+        "hash": "15869985070174843569"
+      },
+      {
+        "file": "package.json",
+        "hash": "12108436327077032438"
+      }
+    ]
+  }
+}

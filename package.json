@@ -1,0 +1,12 @@
+{
+  "name": "the-agency",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev:backend": "nx run backend:serve",
+    "dev:frontend": "nx run frontend:dev"
+  },
+  "devDependencies": {
+    "nx": "^20.0.0"
+  }
+}
