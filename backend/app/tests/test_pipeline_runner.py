@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from app.adapters.opencode_client import OpenCodeClient, OpenCodeClientError
 from app.adapters.opencode_models import MessageInfo, MessageResponse, Part, SessionInfo
 from app.models import Base, Handoff, Pipeline, PipelineStatus, Step, StepStatus
-from app.schemas.registry import AgentProfile, PipelineStep, PipelineTemplate
+from app.schemas.registry import AgentProfile, AgentStep, ApprovalStep, PipelineTemplate
 
 # ---------------------------------------------------------------------------
 # Helpers / factories
@@ -307,10 +307,11 @@ class TestRunPipelineSuccess:
             name="quick_fix",
             description="Quick fix",
             steps=[
-                PipelineStep(agent="developer", description="step 1"),
-                PipelineStep(agent="developer", description="step 2"),
+                AgentStep(agent="developer", description="step 1"),
+                AgentStep(agent="developer", description="step 2"),
             ],
         )
+
         runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30, registry=mock_registry)
 
         await runner.run_pipeline(pipeline, template)
@@ -334,8 +335,8 @@ class TestRunPipelineFailure:
             name="quick_fix",
             description="Quick fix",
             steps=[
-                PipelineStep(agent="developer", description="step 1"),
-                PipelineStep(agent="developer", description="step 2"),
+                AgentStep(agent="developer", description="step 1"),
+                AgentStep(agent="developer", description="step 2"),
             ],
         )
         runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30, registry=mock_registry)
@@ -367,8 +368,8 @@ class TestRunPipelineHandoff:
             name="quick_fix",
             description="Quick fix",
             steps=[
-                PipelineStep(agent="developer", description="step 1"),
-                PipelineStep(agent="developer", description="step 2"),
+                AgentStep(agent="developer", description="step 1"),
+                AgentStep(agent="developer", description="step 2"),
             ],
         )
         runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30, registry=mock_registry)
@@ -395,8 +396,8 @@ class TestRunPipelineUnknownAgent:
             name="quick_fix",
             description="Quick fix",
             steps=[
-                PipelineStep(agent="unknown_agent", description="step 1"),
-                PipelineStep(agent="developer", description="step 2"),
+                AgentStep(agent="unknown_agent", description="step 1"),
+                AgentStep(agent="developer", description="step 2"),
             ],
         )
         runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30, registry=mock_registry)
@@ -620,8 +621,8 @@ class TestExecuteStepsContextHeader:
             name="quick_fix",
             description="Quick fix",
             steps=[
-                PipelineStep(agent="developer", description="step 1"),
-                PipelineStep(agent="developer", description="step 2"),
+                AgentStep(agent="developer", description="step 1"),
+                AgentStep(agent="developer", description="step 2"),
             ],
         )
         runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30, registry=mock_registry)
@@ -647,8 +648,8 @@ class TestExecuteStepsContextHeader:
             name="quick_fix",
             description="Quick fix",
             steps=[
-                PipelineStep(agent="developer", description="step 1"),
-                PipelineStep(agent="developer", description="step 2"),
+                AgentStep(agent="developer", description="step 1"),
+                AgentStep(agent="developer", description="step 2"),
             ],
         )
         runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30, registry=mock_registry)
@@ -762,3 +763,274 @@ class TestResumePipelineContextHeader:
         await runner.resume_pipeline(pipeline, template=None)
 
         assert received_prompts[0].startswith("## Handoff from previous step")
+
+
+# ---------------------------------------------------------------------------
+# Milestone 2 Tests: Approval step detection in _execute_steps
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def db_engine_for_approval():
+    """Separate in-memory engine for approval tests that need two concurrent sessions."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield engine
+    await engine.dispose()
+
+
+@pytest.fixture
+async def approval_pipeline(db_engine_for_approval):
+    """A Pipeline with three steps: agent → approval → agent. Uses its own engine."""
+    async with AsyncSession(db_engine_for_approval, expire_on_commit=False) as session:
+        pipeline = Pipeline(
+            title="Approval Pipeline",
+            template="approval_flow",
+            prompt="Initial prompt",
+            status=PipelineStatus.running,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        session.add(pipeline)
+        await session.flush()
+
+        step_agent1 = Step(
+            pipeline_id=pipeline.id,
+            agent_name="developer",
+            order_index=0,
+            status=StepStatus.pending,
+        )
+        step_approval = Step(
+            pipeline_id=pipeline.id,
+            agent_name="__approval__",
+            order_index=1,
+            status=StepStatus.pending,
+        )
+        step_agent2 = Step(
+            pipeline_id=pipeline.id,
+            agent_name="reviewer",
+            order_index=2,
+            status=StepStatus.pending,
+        )
+        session.add(step_agent1)
+        session.add(step_approval)
+        session.add(step_agent2)
+        await session.commit()
+        return pipeline.id, step_agent1.id, step_approval.id, step_agent2.id
+
+
+class TestApprovalStepDetection:
+    async def test_runner_pauses_at_approval_step(
+        self, mock_client, mock_registry, approval_pipeline, db_engine_for_approval
+    ):
+        """When the runner hits an approval step it sets pipeline to waiting_for_approval and pauses."""
+        from sqlalchemy import select as sa_select
+
+        from app.models import Approval, ApprovalStatus
+        from app.services.pipeline_runner import PipelineRunner
+
+        pipeline_id, step_agent1_id, step_approval_id, step_agent2_id = approval_pipeline
+        approval_event: asyncio.Event = asyncio.Event()
+
+        async def _runner_task() -> None:
+            async with AsyncSession(db_engine_for_approval, expire_on_commit=False) as runner_session:
+                result = await runner_session.execute(sa_select(Pipeline).where(Pipeline.id == pipeline_id))
+                pipeline = result.scalar_one()
+                runner = PipelineRunner(
+                    client=mock_client,
+                    db=runner_session,
+                    step_timeout=30,
+                    registry=mock_registry,
+                    approval_events={pipeline_id: approval_event},
+                )
+                await runner.run_pipeline(
+                    pipeline,
+                    PipelineTemplate(
+                        name="approval_flow",
+                        description="d",
+                        steps=[
+                            AgentStep(agent="developer", description="s1"),
+                            ApprovalStep(type="approval", description="gate"),
+                            AgentStep(agent="reviewer", description="s3"),
+                        ],
+                    ),
+                )
+
+        async def _approve_task() -> None:
+            async with AsyncSession(db_engine_for_approval, expire_on_commit=False) as helper_session:
+                approval = None
+                for _ in range(50):
+                    await asyncio.sleep(0.01)
+                    result = await helper_session.execute(
+                        sa_select(Approval).where(Approval.step_id == step_approval_id)
+                    )
+                    approval = result.scalar_one_or_none()
+                    if approval is not None:
+                        break
+
+                assert approval is not None
+                result = await helper_session.execute(sa_select(Pipeline).where(Pipeline.id == pipeline_id))
+                pipeline = result.scalar_one()
+                assert pipeline.status == PipelineStatus.waiting_for_approval
+
+                approval.status = ApprovalStatus.approved
+                approval.comment = "Looks good"
+                approval.decided_by = "reviewer_human"
+                approval.decided_at = datetime.now(UTC)
+                await helper_session.commit()
+            approval_event.set()
+
+        runner_task = asyncio.create_task(_runner_task())
+        await asyncio.wait_for(_approve_task(), timeout=5.0)
+        await asyncio.wait_for(runner_task, timeout=5.0)
+
+        async with AsyncSession(db_engine_for_approval, expire_on_commit=False) as check_session:
+            result = await check_session.execute(sa_select(Pipeline).where(Pipeline.id == pipeline_id))
+            pipeline = result.scalar_one()
+            assert pipeline.status == PipelineStatus.done
+
+            result = await check_session.execute(sa_select(Step).where(Step.id == step_agent1_id))
+            assert result.scalar_one().status == StepStatus.done
+
+            result = await check_session.execute(sa_select(Step).where(Step.id == step_approval_id))
+            assert result.scalar_one().status == StepStatus.done
+
+            result = await check_session.execute(sa_select(Step).where(Step.id == step_agent2_id))
+            assert result.scalar_one().status == StepStatus.done
+
+    async def test_runner_fails_pipeline_on_rejection(
+        self, mock_client, mock_registry, approval_pipeline, db_engine_for_approval
+    ):
+        """When an approval step is rejected, the pipeline is marked failed."""
+        from sqlalchemy import select as sa_select
+
+        from app.models import Approval, ApprovalStatus
+        from app.services.pipeline_runner import PipelineRunner
+
+        pipeline_id, step_agent1_id, step_approval_id, step_agent2_id = approval_pipeline
+        approval_event: asyncio.Event = asyncio.Event()
+
+        async def _runner_task() -> None:
+            async with AsyncSession(db_engine_for_approval, expire_on_commit=False) as runner_session:
+                result = await runner_session.execute(sa_select(Pipeline).where(Pipeline.id == pipeline_id))
+                pipeline = result.scalar_one()
+                runner = PipelineRunner(
+                    client=mock_client,
+                    db=runner_session,
+                    step_timeout=30,
+                    registry=mock_registry,
+                    approval_events={pipeline_id: approval_event},
+                )
+                await runner.run_pipeline(
+                    pipeline,
+                    PipelineTemplate(
+                        name="approval_flow",
+                        description="d",
+                        steps=[
+                            AgentStep(agent="developer", description="s1"),
+                            ApprovalStep(type="approval", description="gate"),
+                            AgentStep(agent="reviewer", description="s3"),
+                        ],
+                    ),
+                )
+
+        async def _reject_task() -> None:
+            async with AsyncSession(db_engine_for_approval, expire_on_commit=False) as helper_session:
+                approval = None
+                for _ in range(50):
+                    await asyncio.sleep(0.01)
+                    result = await helper_session.execute(
+                        sa_select(Approval).where(Approval.step_id == step_approval_id)
+                    )
+                    approval = result.scalar_one_or_none()
+                    if approval is not None:
+                        break
+
+                assert approval is not None
+                approval.status = ApprovalStatus.rejected
+                approval.decided_at = datetime.now(UTC)
+                await helper_session.commit()
+            approval_event.set()
+
+        runner_task = asyncio.create_task(_runner_task())
+        await asyncio.wait_for(_reject_task(), timeout=5.0)
+        await asyncio.wait_for(runner_task, timeout=5.0)
+
+        async with AsyncSession(db_engine_for_approval, expire_on_commit=False) as check_session:
+            result = await check_session.execute(sa_select(Pipeline).where(Pipeline.id == pipeline_id))
+            assert result.scalar_one().status == PipelineStatus.failed
+
+            result = await check_session.execute(sa_select(Step).where(Step.id == step_approval_id))
+            assert result.scalar_one().status == StepStatus.failed
+
+            result = await check_session.execute(sa_select(Step).where(Step.id == step_agent2_id))
+            assert result.scalar_one().status == StepStatus.pending
+
+    async def test_approval_step_writes_audit_event(
+        self, mock_client, mock_registry, approval_pipeline, db_engine_for_approval
+    ):
+        """An approval_requested AuditEvent is written when the pipeline pauses."""
+        from sqlalchemy import select as sa_select
+
+        from app.models import Approval, ApprovalStatus, AuditEvent
+        from app.services.pipeline_runner import PipelineRunner
+
+        pipeline_id, _, step_approval_id, _ = approval_pipeline
+        approval_event: asyncio.Event = asyncio.Event()
+
+        async def _runner_task() -> None:
+            async with AsyncSession(db_engine_for_approval, expire_on_commit=False) as runner_session:
+                result = await runner_session.execute(sa_select(Pipeline).where(Pipeline.id == pipeline_id))
+                pipeline = result.scalar_one()
+                runner = PipelineRunner(
+                    client=mock_client,
+                    db=runner_session,
+                    step_timeout=30,
+                    registry=mock_registry,
+                    approval_events={pipeline_id: approval_event},
+                )
+                await runner.run_pipeline(
+                    pipeline,
+                    PipelineTemplate(
+                        name="approval_flow",
+                        description="d",
+                        steps=[
+                            AgentStep(agent="developer", description="s1"),
+                            ApprovalStep(type="approval", description="gate"),
+                            AgentStep(agent="reviewer", description="s3"),
+                        ],
+                    ),
+                )
+
+        async def _approve_task() -> None:
+            async with AsyncSession(db_engine_for_approval, expire_on_commit=False) as helper_session:
+                for _ in range(50):
+                    await asyncio.sleep(0.01)
+                    result = await helper_session.execute(
+                        sa_select(Approval).where(Approval.step_id == step_approval_id)
+                    )
+                    if result.scalar_one_or_none() is not None:
+                        break
+
+                result = await helper_session.execute(sa_select(Approval).where(Approval.step_id == step_approval_id))
+                approval = result.scalar_one()
+                approval.status = ApprovalStatus.approved
+                approval.decided_at = datetime.now(UTC)
+                await helper_session.commit()
+            approval_event.set()
+
+        runner_task = asyncio.create_task(_runner_task())
+        await asyncio.wait_for(_approve_task(), timeout=5.0)
+        await asyncio.wait_for(runner_task, timeout=5.0)
+
+        async with AsyncSession(db_engine_for_approval, expire_on_commit=False) as check_session:
+            result = await check_session.execute(
+                sa_select(AuditEvent).where(
+                    AuditEvent.pipeline_id == pipeline_id,
+                    AuditEvent.event_type == "approval_requested",
+                )
+            )
+            audit = result.scalar_one_or_none()
+            assert audit is not None
+            assert audit.step_id == step_approval_id

@@ -11,13 +11,15 @@ from sqlalchemy.orm import selectinload
 
 from app.adapters.opencode_client import OpenCodeClient, OpenCodeClientError
 from app.adapters.opencode_models import MessageResponse
-from app.models import AuditEvent, Handoff, Pipeline, PipelineStatus, Step, StepStatus
+from app.models import Approval, ApprovalStatus, AuditEvent, Handoff, Pipeline, PipelineStatus, Step, StepStatus
 from app.schemas.handoff import HandoffSchema
 from app.schemas.registry import AgentProfile, PipelineTemplate
 from app.services.agent_registry import AgentRegistry
 from app.services.handoff_extractor import HandoffExtractor
 
 logger = structlog.get_logger(__name__)
+
+APPROVAL_SENTINEL = "__approval__"
 
 
 class StepExecutionError(Exception):
@@ -42,6 +44,7 @@ class PipelineRunner:
         step_timeout: float = 600,
         registry: "AgentRegistry | None" = None,
         extractor: "HandoffExtractor | None" = None,
+        approval_events: "dict[int, asyncio.Event] | None" = None,
     ) -> None:
         self._client = client
         self._db = db
@@ -49,6 +52,7 @@ class PipelineRunner:
         self._registry = registry
         self._extractor = extractor or HandoffExtractor()
         self._current_session_id: str | None = None
+        self._approval_events: dict[int, asyncio.Event] = approval_events if approval_events is not None else {}
 
     @property
     def current_session_id(self) -> str | None:
@@ -163,6 +167,106 @@ class PipelineRunner:
         step.finished_at = datetime.now(UTC)
         await self._db.commit()
 
+    async def _mark_pipeline_failed(self, pipeline: Pipeline, step: Step | None = None) -> None:
+        """Mark pipeline (and optionally a step) as failed and commit."""
+        if step is not None:
+            step.status = StepStatus.failed
+            step.finished_at = datetime.now(UTC)
+        pipeline.status = PipelineStatus.failed
+        pipeline.updated_at = datetime.now(UTC)
+        await self._db.commit()
+
+    async def _execute_approval_step(self, step: Step, pipeline: Pipeline, current_prompt: str) -> str | None:
+        """Handle an approval gate step.
+
+        Creates an Approval record, sets the pipeline to waiting_for_approval, and
+        awaits the approval_event for this pipeline. Returns the updated prompt on
+        approval (with optional comment appended), or None on rejection.
+
+        Callers must check the return value: None means the pipeline should be aborted.
+        """
+        step.status = StepStatus.running
+        step.started_at = datetime.now(UTC)
+
+        approval = Approval(
+            step_id=step.id,
+            status=ApprovalStatus.pending,
+        )
+        self._db.add(approval)
+
+        audit_requested = AuditEvent(
+            pipeline_id=pipeline.id,
+            step_id=step.id,
+            event_type="approval_requested",
+            payload_json=json.dumps({"step_id": step.id}),
+        )
+        self._db.add(audit_requested)
+
+        pipeline.status = PipelineStatus.waiting_for_approval
+        pipeline.updated_at = datetime.now(UTC)
+        await self._db.commit()
+
+        logger.info("approval_step_waiting", pipeline_id=pipeline.id, step_id=step.id)
+
+        # Retrieve or create an event for this pipeline.
+        event = self._approval_events.get(pipeline.id)
+        if event is None:
+            # No event registered — this shouldn't happen in production but is safe
+            # for tests that don't pass an event. Create one that will never fire and
+            # let the caller handle the timeout.
+            event = asyncio.Event()
+            self._approval_events[pipeline.id] = event
+
+        await event.wait()
+
+        # Re-read the approval from the DB to get the decision.
+        await self._db.refresh(approval)
+
+        if approval.status == ApprovalStatus.approved:
+            step.status = StepStatus.done
+            step.finished_at = datetime.now(UTC)
+            pipeline.status = PipelineStatus.running
+            pipeline.updated_at = datetime.now(UTC)
+
+            audit_granted = AuditEvent(
+                pipeline_id=pipeline.id,
+                step_id=step.id,
+                event_type="approval_granted",
+                payload_json=json.dumps({"decided_by": approval.decided_by, "comment": approval.comment}),
+            )
+            self._db.add(audit_granted)
+            await self._db.commit()
+
+            # Append comment to next prompt if provided.
+            if approval.comment:
+                return f"{current_prompt}\n\n[Approval note: {approval.comment}]"
+            return current_prompt
+
+        elif approval.status == ApprovalStatus.rejected:
+            # Rejected
+            audit_rejected = AuditEvent(
+                pipeline_id=pipeline.id,
+                step_id=step.id,
+                event_type="approval_rejected",
+                payload_json=json.dumps({"decided_by": approval.decided_by, "comment": approval.comment}),
+            )
+            self._db.add(audit_rejected)
+            await self._mark_pipeline_failed(pipeline, step)
+
+            logger.info("approval_step_rejected", pipeline_id=pipeline.id, step_id=step.id)
+            return None
+
+        else:
+            # Unexpected status — should never happen; treat as rejection and log prominently.
+            logger.error(
+                "approval_unexpected_status",
+                pipeline_id=pipeline.id,
+                step_id=step.id,
+                approval_status=approval.status,
+            )
+            await self._mark_pipeline_failed(pipeline, step)
+            return None
+
     async def _execute_steps(self, steps: list[Step], initial_prompt: str, pipeline: Pipeline) -> None:
         """Execute a list of steps sequentially, chaining output as the next prompt.
 
@@ -175,6 +279,15 @@ class PipelineRunner:
         current_prompt = initial_prompt
 
         for step in steps:
+            # Approval gate step — pause and wait for a human decision.
+            if step.agent_name == APPROVAL_SENTINEL:
+                result_prompt = await self._execute_approval_step(step, pipeline, current_prompt)
+                if result_prompt is None:
+                    # Rejected — pipeline already marked failed in _execute_approval_step.
+                    return
+                current_prompt = result_prompt
+                continue
+
             step.status = StepStatus.running
             step.started_at = datetime.now(UTC)
             await self._db.commit()
@@ -182,11 +295,7 @@ class PipelineRunner:
             agent_profile = self._registry.get_agent(step.agent_name)
             if agent_profile is None:
                 logger.error("unknown_agent", agent_name=step.agent_name, step_id=step.id)
-                step.status = StepStatus.failed
-                step.finished_at = datetime.now(UTC)
-                pipeline.status = PipelineStatus.failed
-                pipeline.updated_at = datetime.now(UTC)
-                await self._db.commit()
+                await self._mark_pipeline_failed(pipeline, step)
                 return
 
             try:
@@ -196,9 +305,7 @@ class PipelineRunner:
                 else:
                     current_prompt = output_text
             except StepExecutionError:
-                pipeline.status = PipelineStatus.failed
-                pipeline.updated_at = datetime.now(UTC)
-                await self._db.commit()
+                await self._mark_pipeline_failed(pipeline)
                 return
 
         pipeline.status = PipelineStatus.done
@@ -294,7 +401,7 @@ async def recover_interrupted_pipelines(
     db_session_factory: "async_sessionmaker[AsyncSession]",
     client: OpenCodeClient,
     registry: "AgentRegistry",
-    task_set: "set[asyncio.Task]",  # type: ignore[type-arg]
+    task_set: "dict[int, asyncio.Task]",  # type: ignore[type-arg]
     step_timeout: float = 600,
 ) -> None:
     """Find all pipelines stuck in 'running' status and re-queue them as background tasks.
@@ -315,5 +422,5 @@ async def recover_interrupted_pipelines(
                 await runner.resume_pipeline(p, template=None)
 
         task = asyncio.create_task(_resume())
-        task_set.add(task)
-        task.add_done_callback(task_set.discard)
+        task_set[pipeline.id] = task
+        task.add_done_callback(lambda t, pid=pipeline.id: task_set.pop(pid, None))

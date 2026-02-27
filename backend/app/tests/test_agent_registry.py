@@ -4,9 +4,9 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.registry import AgentProfile, PipelineTemplate
+from app.schemas.registry import AgentProfile, AgentStep, ApprovalStep, PipelineTemplate
 from app.services.agent_registry import AgentRegistry, watch_and_reload
-from app.tests.conftest import VALID_AGENTS, VALID_PIPELINES, write_yaml
+from app.tests.conftest import APPROVAL_PIPELINES, VALID_AGENTS, VALID_PIPELINES, write_yaml
 
 
 class TestAgentRegistryLoad:
@@ -134,6 +134,62 @@ class TestAgentRegistryReload:
         # Old state preserved
         assert len(registry.agents()) == 2
         assert registry.get_agent("developer") is not None
+
+
+class TestApprovalStepSchema:
+    def test_agent_step_parses_with_explicit_type(self) -> None:
+        step = AgentStep(type="agent", agent="developer", description="Do it")
+        assert step.agent == "developer"
+        assert step.type == "agent"
+
+    def test_agent_step_parses_without_explicit_type(self) -> None:
+        """type defaults to 'agent' so existing YAML without a type field still works."""
+        step = AgentStep(agent="developer")
+        assert step.type == "agent"
+
+    def test_approval_step_parses(self) -> None:
+        step = ApprovalStep(type="approval", description="Human review")
+        assert step.type == "approval"
+        assert step.description == "Human review"
+
+    def test_pipeline_step_discriminated_union_agent(self) -> None:
+        """PipelineTemplate accepts steps with type='agent'."""
+        template = PipelineTemplate(
+            name="t",
+            description="d",
+            steps=[{"type": "agent", "agent": "developer", "description": "step1"}],
+        )
+        assert isinstance(template.steps[0], AgentStep)
+
+    def test_pipeline_step_discriminated_union_approval(self) -> None:
+        """PipelineTemplate accepts steps with type='approval'."""
+        template = PipelineTemplate(
+            name="t",
+            description="d",
+            steps=[{"type": "approval", "description": "Review me"}],
+        )
+        assert isinstance(template.steps[0], ApprovalStep)
+
+    def test_pipeline_step_default_type_is_agent(self) -> None:
+        """Steps without a type field default to AgentStep (backwards-compatible)."""
+        template = PipelineTemplate(
+            name="t",
+            description="d",
+            steps=[{"agent": "developer", "description": "step1"}],
+        )
+        assert isinstance(template.steps[0], AgentStep)
+
+    def test_approval_step_does_not_require_agent_in_registry(self, tmp_path: Path) -> None:
+        """A pipeline with an approval step passes registry validation without an 'approval' agent."""
+        agents_path = tmp_path / "agents.yaml"
+        pipelines_path = tmp_path / "pipelines.yaml"
+        write_yaml(agents_path, VALID_AGENTS)
+        write_yaml(pipelines_path, APPROVAL_PIPELINES)
+        registry = AgentRegistry(agents_path=str(agents_path), pipelines_path=str(pipelines_path))
+        pipeline = registry.get_pipeline("approval_flow")
+        assert pipeline is not None
+        assert len(pipeline.steps) == 3
+        assert isinstance(pipeline.steps[1], ApprovalStep)
 
 
 class TestWatchAndReload:

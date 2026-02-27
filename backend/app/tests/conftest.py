@@ -36,6 +36,21 @@ VALID_PIPELINES = {
 }
 
 
+APPROVAL_PIPELINES = {
+    "pipelines": [
+        {
+            "name": "approval_flow",
+            "description": "Pipeline with a human checkpoint.",
+            "steps": [
+                {"agent": "developer", "description": "Implement."},
+                {"type": "approval", "description": "Human review."},
+                {"agent": "reviewer", "description": "Final review."},
+            ],
+        }
+    ]
+}
+
+
 def write_yaml(path: Path, data: dict) -> None:
     path.write_text(yaml.dump(data, default_flow_style=False))
 

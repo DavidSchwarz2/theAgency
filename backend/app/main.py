@@ -1,6 +1,5 @@
 import asyncio
 import contextlib
-import subprocess
 from contextlib import asynccontextmanager
 
 import structlog
@@ -10,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.adapters.opencode_client import OpenCodeClient
 from app.config.config import settings
 from app.database import AsyncSessionLocal
+from app.routers import approvals as approvals_router
 from app.routers import events, health
 from app.routers import pipelines as pipelines_router
 from app.routers import registry as registry_router
@@ -30,15 +30,21 @@ logger = structlog.get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("running_migrations", action="alembic upgrade head")
-    result = subprocess.run(  # noqa: S603
-        ["uv", "run", "alembic", "upgrade", "head"],  # noqa: S607
-        capture_output=True,
-        text=True,
+    proc = await asyncio.create_subprocess_exec(
+        "uv",
+        "run",
+        "alembic",
+        "upgrade",
+        "head",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
-    if result.returncode != 0:
-        logger.error("migration_failed", stderr=result.stderr)
-        raise RuntimeError(f"Alembic migration failed: {result.stderr}")
-    logger.info("migrations_complete", stdout=result.stdout.strip())
+    stdout_bytes, stderr_bytes = await proc.communicate()
+    if proc.returncode != 0:
+        stderr_text = stderr_bytes.decode()
+        logger.error("migration_failed", stderr=stderr_text)
+        raise RuntimeError(f"Alembic migration failed: {stderr_text}")
+    logger.info("migrations_complete", stdout=stdout_bytes.decode().strip())
 
     # Initialize Agent Registry from YAML config
     agent_registry = AgentRegistry(
@@ -50,8 +56,9 @@ async def lifespan(app: FastAPI):
     # Initialize OpenCode client and pipeline task tracking
     opencode_client = OpenCodeClient(base_url=settings.opencode_base_url)
     app.state.opencode_client = opencode_client
-    app.state.pipeline_tasks = set()
+    app.state.pipeline_tasks = {}  # dict[int, asyncio.Task]
     app.state.active_runners = {}
+    app.state.approval_events = {}
     app.state.step_timeout = float(settings.step_timeout_seconds)
     app.state.db_session_factory = AsyncSessionLocal
 
@@ -77,10 +84,10 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown: cancel pending pipeline tasks
-    for task in list(app.state.pipeline_tasks):
+    for task in list(app.state.pipeline_tasks.values()):
         task.cancel()
     if app.state.pipeline_tasks:
-        await asyncio.gather(*app.state.pipeline_tasks, return_exceptions=True)
+        await asyncio.gather(*app.state.pipeline_tasks.values(), return_exceptions=True)
 
     # Shutdown: stop file watcher
     stop_event.set()
@@ -111,3 +118,4 @@ app.include_router(health.router)
 app.include_router(events.router)
 app.include_router(registry_router.router)
 app.include_router(pipelines_router.router)
+app.include_router(approvals_router.router)

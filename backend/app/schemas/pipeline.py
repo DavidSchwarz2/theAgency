@@ -4,7 +4,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
-from app.models import PipelineStatus, StepStatus
+from app.models import ApprovalStatus, PipelineStatus, StepStatus
 
 
 class PipelineCreateRequest(BaseModel):
@@ -53,3 +53,23 @@ class PipelineResponse(BaseModel):
 
 class PipelineDetailResponse(PipelineResponse):
     steps: list[StepStatusResponse]
+
+
+class ApproveRequest(BaseModel):
+    comment: str | None = None
+    decided_by: str | None = None
+
+
+class RejectRequest(BaseModel):
+    comment: str | None = None
+    decided_by: str | None = None
+
+
+class ApprovalResponse(BaseModel):
+    id: int
+    pipeline_id: int
+    step_id: int
+    status: ApprovalStatus
+    comment: str | None
+    decided_by: str | None
+    decided_at: datetime | None

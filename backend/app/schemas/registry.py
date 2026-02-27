@@ -1,4 +1,6 @@
-from pydantic import BaseModel, ConfigDict, model_validator
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class _RegistryBase(BaseModel):
@@ -12,15 +14,46 @@ class AgentProfile(_RegistryBase):
     system_prompt_additions: str = ""
 
 
-class PipelineStep(_RegistryBase):
+class AgentStep(_RegistryBase):
+    """A pipeline step that delegates to an AI agent."""
+
+    type: Literal["agent"] = "agent"
     agent: str
     description: str = ""
+
+
+class ApprovalStep(_RegistryBase):
+    """A pipeline step that pauses execution until a human approves or rejects."""
+
+    type: Literal["approval"]
+    description: str = ""
+
+
+# Discriminated union — the `type` field routes parsing.
+PipelineStep = Annotated[AgentStep | ApprovalStep, Field(discriminator="type")]
+
+
+def _inject_step_type(steps: list) -> list:
+    """Backwards-compatibility: inject type='agent' for steps that omit the type field."""
+    result = []
+    for step in steps:
+        if isinstance(step, dict) and "type" not in step:
+            step = {**step, "type": "agent"}
+        result.append(step)
+    return result
 
 
 class PipelineTemplate(_RegistryBase):
     name: str
     description: str
     steps: list[PipelineStep]
+
+    @field_validator("steps", mode="before")
+    @classmethod
+    def _backfill_step_types(cls, v: object) -> object:
+        if isinstance(v, list):
+            return _inject_step_type(v)
+        return v
 
 
 class RegistryConfig(_RegistryBase):
@@ -32,7 +65,7 @@ class RegistryConfig(_RegistryBase):
         known = {a.name for a in self.agents}
         for pipeline in self.pipelines:
             for step in pipeline.steps:
-                if step.agent not in known:
+                if isinstance(step, AgentStep) and step.agent not in known:
                     raise ValueError(f"Pipeline '{pipeline.name}' step references unknown agent '{step.agent}'")
         return self
 
@@ -54,9 +87,18 @@ class AgentProfileResponse(_ResponseBase):
     opencode_agent: str
 
 
-class PipelineStepResponse(_ResponseBase):
+class AgentStepResponse(_ResponseBase):
+    type: Literal["agent"] = "agent"
     agent: str
     description: str
+
+
+class ApprovalStepResponse(_ResponseBase):
+    type: Literal["approval"]
+    description: str
+
+
+PipelineStepResponse = Annotated[AgentStepResponse | ApprovalStepResponse, Field(discriminator="type")]
 
 
 class PipelineTemplateResponse(_ResponseBase):

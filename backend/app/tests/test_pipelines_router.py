@@ -1,5 +1,6 @@
 """TDD tests for the /pipelines REST API (Milestone 4)."""
 
+import asyncio
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -49,8 +50,9 @@ async def test_client(db_engine, make_registry, mock_opencode_client):
     app.dependency_overrides[get_registry] = lambda: registry
     app.dependency_overrides[get_opencode_client] = lambda: mock_opencode_client
     # Also inject pipeline_tasks, active_runners, db_session_factory, and step_timeout into app.state
-    app.state.pipeline_tasks = set()
+    app.state.pipeline_tasks = {}  # dict[int, asyncio.Task]
     app.state.active_runners = {}
+    app.state.approval_events = {}
     app.state.db_session_factory = session_factory
     app.state.step_timeout = 600.0
 
@@ -317,3 +319,168 @@ class TestGetPipelineHandoff:
         assert response.status_code == 200
         data = response.json()
         assert data["steps"][0]["latest_handoff"] is None
+
+
+# ---------------------------------------------------------------------------
+# Shared helper for approval tests
+# ---------------------------------------------------------------------------
+
+
+async def _make_waiting_pipeline(session_factory, approval_events: dict) -> tuple[int, asyncio.Event]:
+    """Create a pipeline in waiting_for_approval state with a pending Approval record.
+
+    Registers an (unset) asyncio.Event in approval_events so the endpoint can fire it.
+    Returns (pipeline_id, event).
+    """
+    from app.models import Approval, ApprovalStatus
+
+    async with session_factory() as session:
+        pipeline = Pipeline(
+            title="Awaiting Approval",
+            template="quick_fix",
+            prompt="prompt",
+            status=PipelineStatus.waiting_for_approval,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        session.add(pipeline)
+        await session.flush()
+        step = Step(
+            pipeline_id=pipeline.id,
+            agent_name="__approval__",
+            order_index=0,
+            status=StepStatus.running,
+            started_at=datetime.now(UTC),
+        )
+        session.add(step)
+        await session.flush()
+        approval = Approval(step_id=step.id, status=ApprovalStatus.pending)
+        session.add(approval)
+        await session.commit()
+        pipeline_id = pipeline.id
+
+    event = asyncio.Event()
+    approval_events[pipeline_id] = event
+    return pipeline_id, event
+
+
+# ---------------------------------------------------------------------------
+# Milestone 3: POST /pipelines/{id}/approve and /reject
+# ---------------------------------------------------------------------------
+
+
+class TestApprovePipeline:
+    async def test_approve_pipeline_returns_200(self, test_client):
+        """POST /pipelines/{id}/approve returns 200."""
+        client, session_factory = test_client
+        pipeline_id, event = await _make_waiting_pipeline(session_factory, app.state.approval_events)
+
+        response = await client.post(
+            f"/pipelines/{pipeline_id}/approve",
+            json={"comment": "LGTM", "decided_by": "alice"},
+        )
+        assert response.status_code == 200
+        assert event.is_set()
+
+    async def test_approve_pipeline_sets_approval_approved(self, test_client):
+        """POST /pipelines/{id}/approve sets the Approval record to approved."""
+        from app.models import Approval, ApprovalStatus
+
+        client, session_factory = test_client
+        pipeline_id, _ = await _make_waiting_pipeline(session_factory, app.state.approval_events)
+
+        await client.post(
+            f"/pipelines/{pipeline_id}/approve",
+            json={"comment": "All good", "decided_by": "bob"},
+        )
+
+        async with session_factory() as session:
+            from sqlalchemy import select
+
+            result = await session.execute(select(Approval).join(Step).where(Step.pipeline_id == pipeline_id))
+            approval = result.scalar_one()
+            assert approval.status == ApprovalStatus.approved
+            assert approval.comment == "All good"
+            assert approval.decided_by == "bob"
+            assert approval.decided_at is not None
+
+    async def test_approve_pipeline_not_waiting_returns_409(self, test_client):
+        """POST /pipelines/{id}/approve on a non-waiting pipeline returns 409."""
+        client, session_factory = test_client
+
+        async with session_factory() as session:
+            pipeline = Pipeline(
+                title="Running",
+                template="quick_fix",
+                prompt="prompt",
+                status=PipelineStatus.running,
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+            session.add(pipeline)
+            await session.commit()
+            pipeline_id = pipeline.id
+
+        response = await client.post(f"/pipelines/{pipeline_id}/approve", json={})
+        assert response.status_code == 409
+
+    async def test_approve_pipeline_not_found_returns_404(self, test_client):
+        """POST /pipelines/99999/approve returns 404."""
+        client, _ = test_client
+        response = await client.post("/pipelines/99999/approve", json={})
+        assert response.status_code == 404
+
+
+class TestRejectPipeline:
+    async def test_reject_pipeline_returns_200(self, test_client):
+        """POST /pipelines/{id}/reject returns 200."""
+        client, session_factory = test_client
+        pipeline_id, event = await _make_waiting_pipeline(session_factory, app.state.approval_events)
+
+        response = await client.post(
+            f"/pipelines/{pipeline_id}/reject",
+            json={"comment": "Not ready", "decided_by": "carol"},
+        )
+        assert response.status_code == 200
+        assert event.is_set()
+
+    async def test_reject_pipeline_sets_approval_rejected(self, test_client):
+        """POST /pipelines/{id}/reject sets the Approval record to rejected."""
+        from app.models import Approval, ApprovalStatus
+
+        client, session_factory = test_client
+        pipeline_id, _ = await _make_waiting_pipeline(session_factory, app.state.approval_events)
+
+        await client.post(
+            f"/pipelines/{pipeline_id}/reject",
+            json={"comment": "Needs rework", "decided_by": "dan"},
+        )
+
+        async with session_factory() as session:
+            from sqlalchemy import select
+
+            result = await session.execute(select(Approval).join(Step).where(Step.pipeline_id == pipeline_id))
+            approval = result.scalar_one()
+            assert approval.status == ApprovalStatus.rejected
+            assert approval.decided_by == "dan"
+            assert approval.decided_at is not None
+
+    async def test_reject_pipeline_not_waiting_returns_409(self, test_client):
+        """POST /pipelines/{id}/reject on a non-waiting pipeline returns 409."""
+        client, session_factory = test_client
+
+        async with session_factory() as session:
+            pipeline = Pipeline(
+                title="Done",
+                template="quick_fix",
+                prompt="prompt",
+                status=PipelineStatus.done,
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+            session.add(pipeline)
+            await session.commit()
+            pipeline_id = pipeline.id
+
+        response = await client.post(f"/pipelines/{pipeline_id}/reject", json={})
+        assert response.status_code == 409
