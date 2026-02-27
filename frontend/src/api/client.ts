@@ -144,3 +144,11 @@ export function fetchBrowse(path?: string, dirsOnly = false): Promise<FsBrowseRe
   const qs = params.toString()
   return apiFetch<FsBrowseResponse>(`/fs/browse${qs ? `?${qs}` : ''}`)
 }
+
+export function checkConflicts(workingDir: string): Promise<Pipeline[]> {
+  // Guard: empty string is meaningless — backend would return [] anyway but this avoids the
+  // request entirely and keeps the contract explicit.
+  if (!workingDir) return Promise.resolve([])
+  const params = new URLSearchParams({ working_dir: workingDir })
+  return apiFetch<Pipeline[]>(`/pipelines/conflicts?${params.toString()}`)
+}

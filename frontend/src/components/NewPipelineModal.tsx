@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { fetchAgents, fetchGitHubIssue, fetchPipelineTemplates } from '@/api/client'
+import { checkConflicts, fetchAgents, fetchGitHubIssue, fetchPipelineTemplates } from '@/api/client'
 import { useCreatePipeline } from '@/hooks/useCreatePipeline'
 import DirectoryPicker from '@/components/DirectoryPicker'
-import type { CustomStepInput } from '@/types/api'
+import type { CustomStepInput, Pipeline } from '@/types/api'
 
 interface Props {
   open: boolean
@@ -67,6 +67,11 @@ export default function NewPipelineModal({ open, onClose }: Props) {
   // ---- Directory picker ----
   const [showDirPicker, setShowDirPicker] = useState(false)
 
+  // ---- Conflict detection ----
+  const [conflicts, setConflicts] = useState<Pipeline[]>([])
+  const [conflictsAcknowledged, setConflictsAcknowledged] = useState(false)
+  const [conflictsError, setConflictsError] = useState(false)
+
   const createPipeline = useCreatePipeline()
   const firstInputRef = useRef<HTMLInputElement>(null)
 
@@ -106,6 +111,9 @@ export default function NewPipelineModal({ open, onClose }: Props) {
       setGhFetching(false)
       setGhPreview(null)
       setGhError(null)
+      setConflicts([])
+      setConflictsAcknowledged(false)
+      setConflictsError(false)
       reset()
     }
   }, [open, reset])
@@ -129,6 +137,37 @@ export default function NewPipelineModal({ open, onClose }: Props) {
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [open, handleKeyDown])
+
+  // Fetch conflicts when workingDir settles (debounced 400 ms). Reset acknowledgement
+  // whenever the directory changes so a fresh warning is always shown.
+  useEffect(() => {
+    setConflictsAcknowledged(false)
+    setConflictsError(false)
+    if (!workingDir) {
+      setConflicts([])
+      return
+    }
+    let cancelled = false
+    const timer = setTimeout(() => {
+      checkConflicts(workingDir)
+        .then((result) => {
+          if (!cancelled) {
+            setConflicts(result)
+            setConflictsError(false)
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setConflicts([])
+            setConflictsError(true)
+          }
+        })
+    }, 400)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [workingDir])
 
   if (!open) return null
 
@@ -187,6 +226,11 @@ export default function NewPipelineModal({ open, onClose }: Props) {
       }
     }
 
+    // Block submission if conflicts are present and not yet acknowledged via the banner button.
+    if (conflicts.length > 0 && !conflictsAcknowledged) {
+      return
+    }
+
     const ghNum = parseInt(ghNumber, 10)
     const ghFields =
       ghRepo && !isNaN(ghNum) && ghNum >= 1
@@ -218,7 +262,10 @@ export default function NewPipelineModal({ open, onClose }: Props) {
     createPipeline.mutate(req, { onSuccess: () => onClose() })
   }
 
-  const submitDisabled = createPipeline.isPending || (mode === 'template' && templatesLoading)
+  const submitDisabled =
+    createPipeline.isPending ||
+    (mode === 'template' && templatesLoading) ||
+    (conflicts.length > 0 && !conflictsAcknowledged)
 
   return (
     <div
@@ -516,6 +563,46 @@ export default function NewPipelineModal({ open, onClose }: Props) {
               </button>
             </div>
           </div>
+
+          {/* Conflict check error */}
+          {conflictsError && (
+            <p className="text-xs text-orange-400">
+              Could not check for conflicts — proceed with caution.
+            </p>
+          )}
+
+          {/* Conflict warning */}
+          {conflicts.length > 0 && (
+            <div role="alert" className="rounded border border-orange-500 bg-orange-900 px-3 py-2 text-sm text-orange-100">
+              <p className="font-semibold mb-1">Conflict detected in this working directory:</p>
+              <ul className="list-disc list-inside space-y-0.5 text-xs text-orange-200 mb-2">
+                {conflicts.map((p) => (
+                  <li key={p.id}>
+                    <span className="font-medium">{p.title}</span>
+                    {' '}(#{p.id}, {p.status})
+                  </li>
+                ))}
+              </ul>
+              {conflictsAcknowledged ? (
+                <p className="text-xs text-orange-300">
+                  Acknowledged. Click <strong>Create</strong> to proceed.
+                </p>
+              ) : (
+                <div className="flex items-center gap-3">
+                  <p className="flex-1 text-xs text-orange-300">
+                    Starting may cause merge conflicts.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setConflictsAcknowledged(true)}
+                    className="rounded border border-orange-400 px-2 py-1 text-xs text-orange-200 hover:bg-orange-800 whitespace-nowrap"
+                  >
+                    Proceed anyway
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Error */}
           {createPipeline.isError && (

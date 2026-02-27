@@ -1103,3 +1103,100 @@ class TestCreatePipelineGitHubEnrichment:
             pipeline = await session.get(PipelineModel, pipeline_id)
             assert pipeline is not None
             assert pipeline.prompt == "Plain prompt"
+
+
+# ---------------------------------------------------------------------------
+# Tests for GET /pipelines/conflicts
+# ---------------------------------------------------------------------------
+
+
+class TestConflictsEndpoint:
+    """Tests for the GET /pipelines/conflicts?working_dir=... endpoint."""
+
+    async def _seed_pipeline(
+        self,
+        session_factory,
+        *,
+        working_dir: str | None,
+        status: PipelineStatus,
+        title: str = "Test Pipeline",
+    ) -> int:
+        """Helper: insert a pipeline row directly and return its id."""
+        now = datetime.now(UTC)
+        async with session_factory() as session:
+            pipeline = Pipeline(
+                title=title,
+                template="quick_fix",
+                prompt="test",
+                working_dir=working_dir,
+                status=status,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(pipeline)
+            await session.commit()
+            await session.refresh(pipeline)
+            return pipeline.id
+
+    async def test_no_conflicts_when_no_active_pipeline(self, test_client):
+        """Returns [] when no active pipeline targets the given working_dir."""
+        client, session_factory = test_client
+        await self._seed_pipeline(session_factory, working_dir="/foo", status=PipelineStatus.done)
+        response = await client.get("/pipelines/conflicts?working_dir=/foo")
+        assert response.status_code == 200
+        assert response.json() == []
+
+    async def test_returns_conflict_when_running_pipeline_has_same_working_dir(self, test_client):
+        """Returns the running pipeline when it shares working_dir with the query."""
+        client, session_factory = test_client
+        pid = await self._seed_pipeline(
+            session_factory,
+            working_dir="/bar",
+            status=PipelineStatus.running,
+            title="Active Pipeline",
+        )
+        response = await client.get("/pipelines/conflicts?working_dir=/bar")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["id"] == pid
+        assert data[0]["title"] == "Active Pipeline"
+
+    async def test_no_conflict_for_different_working_dir(self, test_client):
+        """Does not return pipelines with a different working_dir."""
+        client, session_factory = test_client
+        await self._seed_pipeline(session_factory, working_dir="/alpha", status=PipelineStatus.running)
+        response = await client.get("/pipelines/conflicts?working_dir=/beta")
+        assert response.status_code == 200
+        assert response.json() == []
+
+    async def test_no_conflict_when_working_dir_omitted(self, test_client):
+        """Returns [] when working_dir query param is absent."""
+        client, session_factory = test_client
+        await self._seed_pipeline(session_factory, working_dir="/foo", status=PipelineStatus.running)
+        response = await client.get("/pipelines/conflicts")
+        assert response.status_code == 200
+        assert response.json() == []
+
+    async def test_waiting_for_approval_counts_as_active(self, test_client):
+        """A pipeline in waiting_for_approval status counts as conflicting."""
+        client, session_factory = test_client
+        pid = await self._seed_pipeline(
+            session_factory,
+            working_dir="/baz",
+            status=PipelineStatus.waiting_for_approval,
+            title="Paused Pipeline",
+        )
+        response = await client.get("/pipelines/conflicts?working_dir=/baz")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["id"] == pid
+
+    async def test_running_pipeline_with_null_working_dir_is_not_a_conflict(self, test_client):
+        """A running pipeline whose working_dir is NULL is never returned as a conflict."""
+        client, session_factory = test_client
+        await self._seed_pipeline(session_factory, working_dir=None, status=PipelineStatus.running)
+        response = await client.get("/pipelines/conflicts?working_dir=/foo")
+        assert response.status_code == 200
+        assert response.json() == []

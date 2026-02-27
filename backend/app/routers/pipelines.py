@@ -209,6 +209,33 @@ async def create_pipeline(
 
 
 # ---------------------------------------------------------------------------
+# GET /pipelines/conflicts — find active pipelines sharing a working_dir
+# ---------------------------------------------------------------------------
+
+
+@router.get("/conflicts", response_model=list[PipelineResponse])
+async def get_pipeline_conflicts(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    working_dir: str | None = None,
+) -> list[PipelineResponse]:
+    """Return active pipelines (running or waiting_for_approval) that share working_dir.
+
+    Returns an empty list when working_dir is absent or empty.
+    """
+    if not working_dir:
+        return []
+    result = await db.execute(
+        select(Pipeline)
+        .where(
+            Pipeline.working_dir == working_dir,
+            Pipeline.status.in_([PipelineStatus.running, PipelineStatus.waiting_for_approval]),
+        )
+        .order_by(Pipeline.id.desc())
+    )
+    return result.scalars().all()  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
 # GET /pipelines/{id} — fetch pipeline detail with steps
 # ---------------------------------------------------------------------------
 
