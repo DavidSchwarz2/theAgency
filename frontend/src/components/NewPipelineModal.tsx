@@ -16,6 +16,7 @@ export default function NewPipelineModal({ open, onClose }: Props) {
   const [template, setTemplate] = useState('')
   const [prompt, setPrompt] = useState('')
   const [branch, setBranch] = useState('')
+  const [workingDir, setWorkingDir] = useState('')
 
   const createPipeline = useCreatePipeline()
   const firstInputRef = useRef<HTMLInputElement>(null)
@@ -39,6 +40,7 @@ export default function NewPipelineModal({ open, onClose }: Props) {
       setTemplate('')
       setPrompt('')
       setBranch('')
+      setWorkingDir('')
       reset()
       // Defer focus until the DOM is visible
       setTimeout(() => firstInputRef.current?.focus(), 0)
@@ -63,7 +65,7 @@ export default function NewPipelineModal({ open, onClose }: Props) {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     createPipeline.mutate(
-      { title, template, prompt, branch: branch || undefined },
+      { title, template, prompt, branch: branch || undefined, working_dir: workingDir || undefined },
       { onSuccess: () => onClose() },
     )
   }
@@ -164,6 +166,21 @@ export default function NewPipelineModal({ open, onClose }: Props) {
               onChange={(e) => setBranch(e.target.value)}
               className={inputCls}
               placeholder="e.g. feature/my-fix"
+            />
+          </div>
+
+          {/* Working Directory (optional) */}
+          <div>
+            <label className="mb-1 block text-sm text-gray-300" htmlFor="np-working-dir">
+              Working Directory <span className="text-gray-500">(optional)</span>
+            </label>
+            <input
+              id="np-working-dir"
+              type="text"
+              value={workingDir}
+              onChange={(e) => setWorkingDir(e.target.value)}
+              className={inputCls}
+              placeholder="/path/to/project"
             />
           </div>
 

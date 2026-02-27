@@ -13,6 +13,7 @@ class PipelineCreateRequest(BaseModel):
     prompt: str
     branch: str | None = None
     step_models: dict[int, str] | None = None
+    working_dir: str | None = None
 
 
 class HandoffResponse(BaseModel):
@@ -51,6 +52,8 @@ class PipelineResponse(BaseModel):
     status: PipelineStatus
     created_at: datetime
     updated_at: datetime
+    branch: str | None = None
+    working_dir: str | None = None
 
 
 class PipelineDetailResponse(PipelineResponse):

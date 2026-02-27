@@ -80,6 +80,7 @@ async def create_pipeline(
         title=body.title,
         template=body.template,
         prompt=body.prompt,
+        working_dir=body.working_dir,
         status=PipelineStatus.running,
         created_at=now,
         updated_at=now,
@@ -190,15 +191,7 @@ async def get_pipeline(
             )
         )
 
-    return PipelineDetailResponse(
-        id=pipeline.id,
-        title=pipeline.title,
-        template=pipeline.template,
-        status=pipeline.status,
-        created_at=pipeline.created_at,
-        updated_at=pipeline.updated_at,
-        steps=step_responses,
-    )
+    return PipelineDetailResponse.model_validate({**pipeline.__dict__, "steps": step_responses})
 
 
 # ---------------------------------------------------------------------------

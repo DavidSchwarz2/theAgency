@@ -65,6 +65,7 @@ class PipelineRunner:
         agent_profile: AgentProfile,
         prompt: str,
         model: str | None = None,
+        working_dir: str | None = None,
     ) -> tuple[str, HandoffSchema | None]:
         """Execute one step synchronously.
 
@@ -79,9 +80,7 @@ class PipelineRunner:
         session_id = session_info.id
         self._current_session_id = session_id
 
-        full_prompt = (
-            f"{agent_profile.system_prompt_additions}\n\n{prompt}" if agent_profile.system_prompt_additions else prompt
-        )
+        full_prompt = self._build_prompt(prompt, agent_profile, working_dir)
 
         try:
             response: MessageResponse = await asyncio.wait_for(
@@ -118,6 +117,21 @@ class PipelineRunner:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_prompt(prompt: str, agent_profile: AgentProfile, working_dir: str | None) -> str:
+        """Assemble the full prompt sent to OpenCode.
+
+        Prepends a working-directory preamble when ``working_dir`` is not None,
+        then prepends ``agent_profile.system_prompt_additions`` if present.
+        """
+        parts: list[str] = []
+        if working_dir is not None:
+            parts.append(f"Working directory: {working_dir} — treat this as the project root for all file operations.")
+        if agent_profile.system_prompt_additions:
+            parts.append(agent_profile.system_prompt_additions)
+        parts.append(prompt)
+        return "\n\n".join(parts)
 
     def _extract_output(self, response: MessageResponse) -> str:
         """Extract text content from a MessageResponse.
@@ -306,7 +320,11 @@ class PipelineRunner:
                 # The `or agent_profile.default_model` fallback handles the crash-recovery
                 # (resume_pipeline) path where a step was created before this feature existed.
                 output_text, handoff_schema = await self.run_step(
-                    step, agent_profile, current_prompt, model=step.model or agent_profile.default_model
+                    step,
+                    agent_profile,
+                    current_prompt,
+                    model=step.model or agent_profile.default_model,
+                    working_dir=pipeline.working_dir,
                 )
                 if handoff_schema is not None:
                     current_prompt = handoff_schema.to_context_header(agent_name=step.agent_name)
@@ -423,11 +441,16 @@ async def recover_interrupted_pipelines(
         pipelines = result.scalars().all()
 
     for pipeline in pipelines:
+        pipeline_id = pipeline.id
 
-        async def _resume(p: Pipeline = pipeline) -> None:
+        async def _resume(pid: int = pipeline_id) -> None:
             async with db_session_factory() as sess:
+                # Re-fetch the pipeline in the new session to avoid DetachedInstanceError
+                # when accessing scalar attributes (e.g. working_dir) from a closed session.
+                result = await sess.execute(select(Pipeline).where(Pipeline.id == pid))
+                fresh_pipeline = result.scalar_one()
                 runner = PipelineRunner(client=client, db=sess, step_timeout=step_timeout, registry=registry)
-                await runner.resume_pipeline(p, template=None)
+                await runner.resume_pipeline(fresh_pipeline, template=None)
 
         task = asyncio.create_task(_resume())
         task_set[pipeline.id] = task

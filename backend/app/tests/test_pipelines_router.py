@@ -666,3 +666,88 @@ class TestCreatePipelineStepModels:
 
         # Both steps are for "developer" which has default_model="gpt-4o"
         assert steps[0].model == "gpt-4o"
+
+
+# ---------------------------------------------------------------------------
+# Issue #12 — working_dir per pipeline run
+# ---------------------------------------------------------------------------
+
+
+class TestCreatePipelineWorkingDir:
+    async def test_create_pipeline_with_working_dir(self, test_client):
+        """POST /pipelines with working_dir persists and returns the value."""
+        from sqlalchemy import select as sa_select
+
+        client, session_factory = test_client
+
+        with patch("app.routers.pipelines.PipelineRunner") as mock_runner_cls:
+            mock_runner = MagicMock()
+            mock_runner.run_pipeline = AsyncMock()
+            mock_runner_cls.return_value = mock_runner
+
+            response = await client.post(
+                "/pipelines",
+                json={
+                    "template": "quick_fix",
+                    "title": "WD Test",
+                    "prompt": "Do the thing",
+                    "working_dir": "/tmp/my_project",
+                },
+            )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["working_dir"] == "/tmp/my_project"
+
+        pipeline_id = data["id"]
+        async with session_factory() as session:
+            result = await session.execute(sa_select(Pipeline).where(Pipeline.id == pipeline_id))
+            pipeline = result.scalar_one()
+            assert pipeline.working_dir == "/tmp/my_project"
+
+    async def test_create_pipeline_without_working_dir_defaults_to_none(self, test_client):
+        """POST /pipelines without working_dir returns working_dir=null."""
+        client, _ = test_client
+
+        with patch("app.routers.pipelines.PipelineRunner") as mock_runner_cls:
+            mock_runner = MagicMock()
+            mock_runner.run_pipeline = AsyncMock()
+            mock_runner_cls.return_value = mock_runner
+
+            response = await client.post(
+                "/pipelines",
+                json={"template": "quick_fix", "title": "No WD", "prompt": "hello"},
+            )
+
+        assert response.status_code == 201
+        assert response.json()["working_dir"] is None
+
+    async def test_get_pipeline_returns_working_dir(self, test_client):
+        """GET /pipelines/{id} includes working_dir in the response."""
+        client, session_factory = test_client
+
+        async with session_factory() as session:
+            pipeline = Pipeline(
+                title="WD Get Test",
+                template="quick_fix",
+                prompt="prompt",
+                status=PipelineStatus.running,
+                working_dir="/srv/repo",
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+            session.add(pipeline)
+            await session.flush()
+            step = Step(
+                pipeline_id=pipeline.id,
+                agent_name="developer",
+                order_index=0,
+                status=StepStatus.pending,
+            )
+            session.add(step)
+            await session.commit()
+            pipeline_id = pipeline.id
+
+        response = await client.get(f"/pipelines/{pipeline_id}")
+        assert response.status_code == 200
+        assert response.json()["working_dir"] == "/srv/repo"

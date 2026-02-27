@@ -31,6 +31,8 @@ export interface Pipeline {
   status: PipelineStatus
   created_at: string
   updated_at: string
+  branch: string | null
+  working_dir: string | null
 }
 
 /** Returned by GET /pipelines/{id} (detail) — includes steps. */
@@ -62,6 +64,7 @@ export interface PipelineCreateRequest {
   prompt: string
   branch?: string
   step_models?: Record<number, string>
+  working_dir?: string
 }
 
 export interface PipelineTemplateStepResponse {

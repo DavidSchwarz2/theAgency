@@ -1171,3 +1171,60 @@ class TestExecuteStepsModelResolution:
 
         first_call_kwargs = mock_client.send_message.call_args_list[0].kwargs
         assert first_call_kwargs.get("model") == "claude-sonnet"
+
+
+# ---------------------------------------------------------------------------
+# Issue #12 — working_dir injected into prompt
+# ---------------------------------------------------------------------------
+
+
+class TestWorkingDirPreamble:
+    async def test_run_step_with_working_dir_prepends_preamble(
+        self, db_session: AsyncSession, mock_client: AsyncMock, pipeline_and_step
+    ):
+        """run_step with working_dir prepends preamble to the prompt sent to send_message."""
+        from app.services.pipeline_runner import PipelineRunner
+
+        _, step = pipeline_and_step
+        agent_profile = make_agent_profile()
+
+        runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30)
+        await runner.run_step(step, agent_profile, prompt="Do the thing", working_dir="/home/user/proj")
+
+        prompt_sent = mock_client.send_message.call_args.kwargs["prompt"]
+        assert prompt_sent.startswith("Working directory: /home/user/proj")
+
+    async def test_run_step_without_working_dir_no_preamble(
+        self, db_session: AsyncSession, mock_client: AsyncMock, pipeline_and_step
+    ):
+        """run_step without working_dir does not add any preamble (no regression)."""
+        from app.services.pipeline_runner import PipelineRunner
+
+        _, step = pipeline_and_step
+        agent_profile = make_agent_profile()
+
+        runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30)
+        await runner.run_step(step, agent_profile, prompt="Do the thing")
+
+        prompt_sent = mock_client.send_message.call_args.kwargs["prompt"]
+        assert "Working directory:" not in prompt_sent
+        assert prompt_sent == "Do the thing"
+
+    async def test_execute_steps_forwards_working_dir(
+        self, db_session: AsyncSession, mock_client: AsyncMock, pipeline_and_step
+    ):
+        """_execute_steps passes working_dir from pipeline.working_dir to run_step."""
+        from app.services.pipeline_runner import PipelineRunner
+
+        pipeline, step = pipeline_and_step
+        pipeline.working_dir = "/srv/workspace"
+        await db_session.commit()
+
+        registry = MagicMock()
+        registry.get_agent.return_value = make_agent_profile()
+
+        runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30, registry=registry)
+        await runner._execute_steps([step], "initial prompt", pipeline)
+
+        prompt_sent = mock_client.send_message.call_args.kwargs["prompt"]
+        assert "Working directory: /srv/workspace" in prompt_sent

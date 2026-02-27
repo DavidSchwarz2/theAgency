@@ -38,6 +38,7 @@ class Pipeline(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     template: Mapped[str] = mapped_column(String(100), nullable=False)
     branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    working_dir: Mapped[str | None] = mapped_column(String(500), nullable=True)
     status: Mapped[PipelineStatus] = mapped_column(Enum(PipelineStatus), nullable=False, default=PipelineStatus.pending)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
