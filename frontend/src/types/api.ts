@@ -54,3 +54,22 @@ export interface AuditQueryParams {
   limit?: number
   offset?: number
 }
+
+export interface PipelineCreateRequest {
+  template: string
+  title: string
+  prompt: string
+  branch?: string
+}
+
+export interface PipelineTemplateStepResponse {
+  type: string
+  agent?: string
+  description: string
+}
+
+export interface PipelineTemplateResponse {
+  name: string
+  description: string
+  steps: PipelineTemplateStepResponse[]
+}

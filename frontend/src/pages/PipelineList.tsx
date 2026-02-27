@@ -1,8 +1,11 @@
+import { useState } from 'react'
 import { usePipelines } from '@/hooks/usePipelines'
 import PipelineCard from '@/components/PipelineCard'
+import NewPipelineModal from '@/components/NewPipelineModal'
 
 export default function PipelineList() {
   const { data: pipelines, isLoading, error } = usePipelines()
+  const [modalOpen, setModalOpen] = useState(false)
 
   if (isLoading) {
     return (
@@ -14,7 +17,7 @@ export default function PipelineList() {
     )
   }
 
-  if (error instanceof Error) {
+  if (error) {
     return (
       <div className="text-red-400 text-sm">
         Failed to load pipelines: {error.message}
@@ -22,20 +25,31 @@ export default function PipelineList() {
     )
   }
 
-  if (!pipelines || pipelines.length === 0) {
-    return (
-      <p className="text-gray-500 text-sm">No pipelines yet. Start one via the API.</p>
-    )
-  }
-
   return (
-    <div>
-      <h1 className="text-lg font-semibold text-white mb-4">Pipelines</h1>
-      <div className="grid gap-4 sm:grid-cols-1 lg:grid-cols-2 xl:grid-cols-3">
-        {pipelines.map((pipeline) => (
-          <PipelineCard key={pipeline.id} pipeline={pipeline} />
-        ))}
+    <>
+      <NewPipelineModal open={modalOpen} onClose={() => setModalOpen(false)} />
+
+      <div>
+        <div className="flex items-center justify-between mb-4">
+          <h1 className="text-lg font-semibold text-white">Pipelines</h1>
+          <button
+            onClick={() => setModalOpen(true)}
+            className="rounded bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-500"
+          >
+            New Pipeline
+          </button>
+        </div>
+
+        {(!pipelines || pipelines.length === 0) ? (
+          <p className="text-gray-500 text-sm">No pipelines yet.</p>
+        ) : (
+          <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
+            {pipelines.map((pipeline) => (
+              <PipelineCard key={pipeline.id} pipeline={pipeline} />
+            ))}
+          </div>
+        )}
       </div>
-    </div>
+    </>
   )
 }
