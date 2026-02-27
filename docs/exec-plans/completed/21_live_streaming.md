@@ -30,7 +30,7 @@ stream.
 - [x] (2026-02-27Z) Milestone 2: Frontend type-check clean (0 errors)
 - [x] (2026-02-27Z) Post-implementation review: code-quality fixes applied — `_STOP` sentinel moved to `SseBroker.STOP` public class attr, `event_stream()` method added, `events.py` refactored with named `_heartbeat_stream`, typed `get_sse_broker` dependency, test determinism improved (sleep→queue.get, monkeypatch for interval), `useOpenCodeStream` `esRef` removed, `onerror` surfaces CLOSED state, `PipelineCard` prop type uses `Pipeline | PipelineDetail`, `StepRow` auto-expands via `useEffect`, `LiveOutputPanel` uses stable key
 - [x] (2026-02-27Z) 219 backend tests pass, frontend type-check clean, no new lint errors
-- [ ] ExecPlan moved to completed/, GH issue #21 closed
+- [x] (2026-02-27Z) ExecPlan moved to completed/, GH issue #21 closed
 
 ## Surprises & Discoveries
 
