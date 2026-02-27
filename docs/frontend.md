@@ -1,40 +1,40 @@
 # Frontend Guidelines
 
-TypeScript, Next.js 16 (App Router), React 19, pnpm. **Biome v2 enforced** (line-width=120).
+TypeScript, Vite 7, React 19, npm. ESLint enforced (line-length=120).
+
+## Stack
+
+- **Build tool**: Vite with `@vitejs/plugin-react`
+- **Styling**: Tailwind CSS v4 via `@tailwindcss/vite`
+- **Routing**: React Router v7 (`react-router-dom`)
+- **Dev server**: port 3000, proxies `/api/*` → `http://localhost:8000`
 
 ## Style
 
-- 2-space indent, semicolons as-needed (ASI)
-- Use `@/` path alias (`@/components/ui/button`)
+- 2-space indent, no trailing semicolons (ASI preferred)
+- Use path alias `@/` mapped to `src/` in `tsconfig.json`
 
 ## Components
 
-- One component per file. Default exports for pages/layouts, named exports for utilities.
-- **UI**: shadcn/ui (new-york style) + Radix primitives in `components/ui/`. Use `cn()` from `@/lib/utils`.
-- **Styling**: Tailwind CSS v4, utility classes inline.
+- One component per file. Default exports for pages, named exports for shared components.
+- Styling: Tailwind utility classes inline. No CSS modules.
 
 ## TypeScript
 
-- Strict mode, target ES2017. Prefer `type` over `interface`.
-- Zod schemas in `types/<domain>.types.ts`, infer with `z.infer<typeof schema>`.
+- Strict mode. Prefer `type` over `interface`.
+- Keep component props typed inline unless reused across files.
 
 ## State & Data
 
-- Zustand stores in `stores/`.
-- TanStack React Query from server actions.
-
-## Server Actions
-
-- `"use server"` directive in `actions/`
-- Pure HTTP client wrappers to `process.env.API_URL` — zero business logic.
-- Return typed responses. Throw `Error` on non-ok responses.
+- Local state with `useState`/`useReducer`.
+- Server data via `fetch` against the backend API (`/api/*`). Wrap in custom hooks in `src/hooks/`.
+- SSE live updates via `EventSource` (`/api/events`).
 
 ## Testing
 
-Type-checking only: `tsc --noEmit`. No runtime tests.
+Type-checking only: `npx tsc --noEmit`. No runtime tests.
 
-## Proxy (Middleware)
+## Proxy
 
-Next.js 16 renamed `middleware.ts` → `proxy.ts` and the exported function from `middleware()` → `proxy()`.
-The active proxy file is `apps/frontend/proxy.ts` — it is **not dead code**. It handles JWT cookie
-validation and redirects unauthenticated users to `/login` for all protected routes.
+Vite dev server proxies `/api/*` to `http://localhost:8000` (strips `/api` prefix). Production
+deployments should configure the same at the reverse-proxy level.

@@ -1,6 +1,6 @@
 # AGENTS.md — elhico (Requirement Optimization Tool)
 
-Monorepo: Python/FastAPI backend + Next.js/React frontend + AWS CDK infrastructure.
+Monorepo: Python/FastAPI backend + Vite/React/TypeScript frontend.
 Managed with **NX** and **mise** (`.mise.toml`).
 
 **[ARCHITECTURE.md](ARCHITECTURE.md) for module map, boundaries, invariants.**
@@ -10,7 +10,7 @@ Managed with **NX** and **mise** (`.mise.toml`).
 `mise install && mise run deps` — installs tooling + all dependencies + creates `.env` files from examples.
 
 - **LLM provider**: set `LLM` in backend `.env` — `gemini`, `openai`, `anthropic`, `gcp_gemini`.
-- **Database**: PostgreSQL 16 with pgvector. `DATABASE_URL` in backend `.env`.
+- **Database**: SQLite (dev) via SQLAlchemy async + aiosqlite. `DATABASE_URL` in backend `.env`.
 
 ## Pre-commit
 
