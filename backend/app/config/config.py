@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./data/agency.db"
     app_version: str = "0.1.0"
     cors_origins: list[str] = ["http://localhost:3000"]
+    opencode_base_port: int = 4096
 
 
 settings = Settings()
