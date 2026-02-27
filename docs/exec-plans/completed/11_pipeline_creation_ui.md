@@ -26,7 +26,7 @@ closes and the new pipeline card appears in the list.
 - [x] (2026-02-27 10:15Z) Type-check passes: `npx nx run frontend:type-check` — 0 errors.
 - [x] (2026-02-27 10:20Z) Code-quality review: resolved all MUST FIX (headers spread order in `apiFetch`, stale closure in `useEffect`) and all SHOULD FIX (asymmetric guards, submit disabled while loading, focus trap + ARIA + Escape, error guard).
 - [x] (2026-02-27 10:25Z) Second type-check after fixes: still clean.
-- [ ] ExecPlan finalized: outcomes written, plan moved to completed location per AGENTS.md.
+- [x] (2026-02-27 10:30Z) ExecPlan finalized: outcomes written, plan moved to completed location per AGENTS.md.
 
 ## Surprises & Discoveries
 
