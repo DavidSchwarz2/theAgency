@@ -1,6 +1,6 @@
 """TDD tests for the /pipelines REST API (Milestone 4)."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -137,8 +137,8 @@ class TestGetPipeline:
                 template="quick_fix",
                 prompt="prompt",
                 status=PipelineStatus.running,
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
             )
             session.add(pipeline)
             await session.flush()
@@ -183,8 +183,8 @@ class TestAbortPipeline:
                 template="quick_fix",
                 prompt="prompt",
                 status=PipelineStatus.running,
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
             )
             session.add(pipeline)
             await session.flush()
@@ -215,8 +215,8 @@ class TestAbortPipeline:
                 template="quick_fix",
                 prompt="prompt",
                 status=PipelineStatus.done,
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
             )
             session.add(pipeline)
             await session.commit()
@@ -224,3 +224,96 @@ class TestAbortPipeline:
 
         response = await client.post(f"/pipelines/{pipeline_id}/abort")
         assert response.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Tests 21-22: GET /pipelines/{id} includes latest_handoff (Milestone 3)
+# ---------------------------------------------------------------------------
+
+
+class TestGetPipelineHandoff:
+    async def test_get_pipeline_includes_latest_handoff(self, test_client):
+        """GET /pipelines/{id} response includes latest_handoff with metadata for a done step."""
+
+        from app.models import Handoff
+        from app.schemas.handoff import HandoffSchema
+
+        client, session_factory = test_client
+
+        async with session_factory() as session:
+            pipeline = Pipeline(
+                title="With Handoff",
+                template="quick_fix",
+                prompt="prompt",
+                status=PipelineStatus.done,
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+            session.add(pipeline)
+            await session.flush()
+
+            step = Step(
+                pipeline_id=pipeline.id,
+                agent_name="developer",
+                order_index=0,
+                status=StepStatus.done,
+                started_at=datetime.now(UTC),
+                finished_at=datetime.now(UTC),
+            )
+            session.add(step)
+            await session.flush()
+
+            schema = HandoffSchema(
+                what_was_done="Fixed the bug.",
+                next_agent_context="Review the fix.",
+            )
+            handoff = Handoff(
+                step_id=step.id,
+                content_md="## What Was Done\nFixed the bug.\n\n## Next Agent Context\nReview the fix.",
+                metadata_json=schema.model_dump_json(exclude_none=True),
+            )
+            session.add(handoff)
+            await session.commit()
+            pipeline_id = pipeline.id
+
+        response = await client.get(f"/pipelines/{pipeline_id}")
+        assert response.status_code == 200
+        data = response.json()
+        step_data = data["steps"][0]
+        assert step_data["latest_handoff"] is not None
+        assert step_data["latest_handoff"]["content_md"] is not None
+        metadata = step_data["latest_handoff"]["metadata"]
+        assert metadata is not None
+        assert metadata["what_was_done"] == "Fixed the bug."
+        assert metadata["next_agent_context"] == "Review the fix."
+
+    async def test_get_pipeline_handoff_null_when_no_handoff(self, test_client):
+        """GET /pipelines/{id} response has latest_handoff=null for a step with no handoffs."""
+        client, session_factory = test_client
+
+        async with session_factory() as session:
+            pipeline = Pipeline(
+                title="No Handoff",
+                template="quick_fix",
+                prompt="prompt",
+                status=PipelineStatus.running,
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+            session.add(pipeline)
+            await session.flush()
+
+            step = Step(
+                pipeline_id=pipeline.id,
+                agent_name="developer",
+                order_index=0,
+                status=StepStatus.pending,
+            )
+            session.add(step)
+            await session.commit()
+            pipeline_id = pipeline.id
+
+        response = await client.get(f"/pipelines/{pipeline_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["steps"][0]["latest_handoff"] is None

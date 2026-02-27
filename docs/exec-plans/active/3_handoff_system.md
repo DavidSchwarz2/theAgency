@@ -29,14 +29,30 @@ includes a `metadata` field with the structured fields.
 - [x] (2026-02-27) Review findings incorporated into revised plan
 - [x] (2026-02-27) ExecPlan reviewed and approved by user
 - [x] (2026-02-27) Milestone 1: HandoffSchema Pydantic model + HandoffExtractor service (extraction logic + tests) — 13 tests, 79 total pass
-- [ ] Milestone 2: Wire extractor into PipelineRunner (structured metadata, context header, audit events)
-- [ ] Milestone 3: Expose handoff metadata in GET /pipelines/{id} API response
-- [ ] Post-impl code-quality review — all MUST FIX and SHOULD FIX resolved
+- [x] (2026-02-27) Milestone 2: Wire extractor into PipelineRunner (structured metadata, context header, audit events) — 7 new tests, 86 total pass
+- [x] (2026-02-27) Milestone 3: Expose handoff metadata in GET /pipelines/{id} API response — 2 new tests, 88 total pass
+- [x] (2026-02-27) Post-impl code-quality review — MUST FIX resolved (datetime.utcnow → now(UTC) in tests, sorted() in get_pipeline); pre-existing bugs noted in Surprises
 - [ ] ExecPlan finalized: outcomes written, plan moved to completed/
 
 ## Surprises & Discoveries
 
-(none yet)
+- `structlog.get_logger()` must be used instead of `logging.getLogger()` in service files.
+- SQLAlchemy `expire_on_commit=False` is required in both production and test sessions —
+  `step.pipeline_id` and `handoff.id` are accessed after commits in `_persist_success`; would
+  raise `MissingGreenlet` without this setting.
+- `_persist_success` must call `await self._db.flush()` before accessing `handoff.id` — flush
+  assigns the auto-increment ID without committing.
+- `HandoffResponse` must NOT use `from_attributes=True` (column is `metadata_json: str`, not
+  `metadata: dict`). Constructed manually in the router.
+- `run_step` now returns `tuple[str, HandoffSchema | None]`. All existing tests that treat the
+  return value as a bare string needed updating to unpack the tuple.
+- The existing `GET /pipelines/{id}` handler's `model_validate(pipeline)` one-liner had to be
+  replaced with manual construction because `Step` ORM has no `latest_handoff` attribute.
+- `datetime.now(UTC)` not `datetime.utcnow()` (deprecated since Python 3.12).
+- **Pre-existing bugs (not introduced by this feature, tracked separately)**:
+  - `recover_interrupted_pipelines` passes detached ORM `Pipeline` objects across sessions.
+  - `abort_pipeline` cancels all pipeline tasks, not just the target pipeline's task.
+  - `resume_pipeline` prompt reconstruction is fragile for failure-then-resume scenarios.
 
 ## Decision Log
 
@@ -98,7 +114,21 @@ includes a `metadata` field with the structured fields.
 
 ## Outcomes & Retrospective
 
-(to be written at completion)
+All 88 backend tests pass (was 75 before this feature). Three milestones delivered:
+
+- **Milestone 1**: `HandoffSchema` + `HandoffExtractor` — deterministic Markdown heading extraction
+  into a typed Pydantic model.
+- **Milestone 2**: `PipelineRunner` wired to extract structured handoffs, persist `metadata_json`,
+  generate compact context headers for the next agent, and write `handoff_created` /
+  `handoff_extraction_failed` audit events.
+- **Milestone 3**: `GET /pipelines/{id}` now exposes `steps[*].latest_handoff` with a `metadata`
+  dict containing the parsed structured fields.
+
+TDD discipline held throughout: every failing test was written before the implementation. The
+post-implementation code-quality review caught 5 MUST FIX issues — 2 pre-existing
+(`datetime.utcnow()` in test fixtures) were fixed; 3 pre-existing bugs in the runner/router
+(`recover_interrupted_pipelines`, `abort_pipeline` task cancellation, `resume_pipeline` fragility)
+were noted for follow-up issues.
 
 ## Context and Orientation
 

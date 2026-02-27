@@ -1,7 +1,7 @@
 """TDD tests for PipelineRunner service (Milestone 1 & 2)."""
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -70,8 +70,8 @@ async def pipeline_and_step(db_session: AsyncSession):
         template="quick_fix",
         prompt="Fix the bug",
         status=PipelineStatus.running,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
     )
     db_session.add(pipeline)
     await db_session.flush()
@@ -81,7 +81,7 @@ async def pipeline_and_step(db_session: AsyncSession):
         agent_name="developer",
         order_index=0,
         status=StepStatus.running,
-        started_at=datetime.utcnow(),
+        started_at=datetime.now(UTC),
     )
     db_session.add(step)
     await db_session.commit()
@@ -104,8 +104,8 @@ async def two_step_pipeline(db_session: AsyncSession):
         template="quick_fix",
         prompt="Initial prompt",
         status=PipelineStatus.running,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
     )
     db_session.add(pipeline)
     await db_session.flush()
@@ -142,9 +142,10 @@ class TestRunStepSuccess:
         agent = make_agent_profile()
         runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30)
 
-        result = await runner.run_step(step, agent, "Fix the bug")
+        output_text, handoff_schema = await runner.run_step(step, agent, "Fix the bug")
 
-        assert result == "output text"
+        assert output_text == "output text"
+        assert handoff_schema is None  # plain "output text" has no structured headings
         assert step.status == StepStatus.done
         assert step.finished_at is not None
 
@@ -419,8 +420,8 @@ async def partial_pipeline(db_session: AsyncSession):
         template="quick_fix",
         prompt="Initial prompt",
         status=PipelineStatus.running,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
     )
     db_session.add(pipeline)
     await db_session.flush()
@@ -430,8 +431,8 @@ async def partial_pipeline(db_session: AsyncSession):
         agent_name="developer",
         order_index=0,
         status=StepStatus.done,
-        started_at=datetime.utcnow(),
-        finished_at=datetime.utcnow(),
+        started_at=datetime.now(UTC),
+        finished_at=datetime.now(UTC),
     )
     step2 = Step(
         pipeline_id=pipeline.id,
@@ -486,9 +487,7 @@ class TestResumePipelineHandoff:
 
 
 class TestResumePipelineAllDone:
-    async def test_resume_pipeline_all_done_marks_done(
-        self, db_session, mock_client, mock_registry
-    ):
+    async def test_resume_pipeline_all_done_marks_done(self, db_session, mock_client, mock_registry):
         """If all steps are done, pipeline is marked done without any send_message call."""
         from app.services.pipeline_runner import PipelineRunner
 
@@ -497,8 +496,8 @@ class TestResumePipelineAllDone:
             template="quick_fix",
             prompt="prompt",
             status=PipelineStatus.running,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         db_session.add(pipeline)
         await db_session.flush()
@@ -508,8 +507,8 @@ class TestResumePipelineAllDone:
             agent_name="developer",
             order_index=0,
             status=StepStatus.done,
-            started_at=datetime.utcnow(),
-            finished_at=datetime.utcnow(),
+            started_at=datetime.now(UTC),
+            finished_at=datetime.now(UTC),
         )
         db_session.add(step)
         await db_session.commit()
@@ -540,3 +539,226 @@ class TestResumePipelineNoDoneSteps:
         await runner.resume_pipeline(pipeline, template=None)
 
         assert received_prompts[0] == "Initial prompt"
+
+
+# ---------------------------------------------------------------------------
+# Milestone 2 (Handoff System) — tests 14–20
+# ---------------------------------------------------------------------------
+
+STRUCTURED_OUTPUT = (
+    "## What Was Done\nImplemented the login endpoint.\n\n## Next Agent Context\nContinue with rate limiting.\n"
+)
+
+
+class TestRunStepHandoffExtraction:
+    async def test_run_step_persists_metadata_json_when_extraction_succeeds(
+        self, db_session, mock_client, pipeline_and_step
+    ):
+        """When agent output has structured headings, metadata_json is stored on Handoff."""
+        from sqlalchemy import select
+
+        from app.models import Handoff
+        from app.schemas.handoff import HandoffSchema
+        from app.services.pipeline_runner import PipelineRunner
+
+        _, step = pipeline_and_step
+        mock_client.send_message.return_value = make_message_response(STRUCTURED_OUTPUT)
+        runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30)
+
+        output, schema = await runner.run_step(step, make_agent_profile(), "prompt")
+
+        assert schema is not None
+        assert isinstance(schema, HandoffSchema)
+        result = await db_session.execute(select(Handoff).where(Handoff.step_id == step.id))
+        handoff = result.scalar_one()
+        assert handoff.metadata_json is not None
+        parsed = HandoffSchema.model_validate_json(handoff.metadata_json)
+        assert parsed.what_was_done == "Implemented the login endpoint."
+
+    async def test_run_step_metadata_json_is_none_when_extraction_fails(
+        self, db_session, mock_client, pipeline_and_step
+    ):
+        """When agent output is plain prose, metadata_json stays None."""
+        from sqlalchemy import select
+
+        from app.models import Handoff
+        from app.services.pipeline_runner import PipelineRunner
+
+        _, step = pipeline_and_step
+        mock_client.send_message.return_value = make_message_response("Just plain prose, no headings here.")
+        runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30)
+
+        output, schema = await runner.run_step(step, make_agent_profile(), "prompt")
+
+        assert schema is None
+        result = await db_session.execute(select(Handoff).where(Handoff.step_id == step.id))
+        handoff = result.scalar_one()
+        assert handoff.metadata_json is None
+
+
+class TestExecuteStepsContextHeader:
+    async def test_execute_steps_uses_context_header_as_next_prompt(
+        self, db_session, mock_client, mock_registry, two_step_pipeline
+    ):
+        """When step 1 produces structured output, step 2's prompt is a context header."""
+        from app.services.pipeline_runner import PipelineRunner
+
+        pipeline, step1, step2 = two_step_pipeline
+        received_prompts: list[str] = []
+        call_count = 0
+
+        async def send_message(session_id, prompt, agent=None):
+            nonlocal call_count
+            received_prompts.append(prompt)
+            call_count += 1
+            if call_count == 1:
+                return make_message_response(STRUCTURED_OUTPUT)
+            return make_message_response("final output")
+
+        mock_client.send_message.side_effect = send_message
+        template = PipelineTemplate(
+            name="quick_fix",
+            description="Quick fix",
+            steps=[
+                PipelineStep(agent="developer", description="step 1"),
+                PipelineStep(agent="developer", description="step 2"),
+            ],
+        )
+        runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30, registry=mock_registry)
+        await runner.run_pipeline(pipeline, template)
+
+        assert received_prompts[1].startswith("## Handoff from previous step")
+
+    async def test_execute_steps_falls_back_to_raw_output_when_extraction_fails(
+        self, db_session, mock_client, mock_registry, two_step_pipeline
+    ):
+        """When step 1 output has no headings, step 2 receives the raw output text."""
+        from app.services.pipeline_runner import PipelineRunner
+
+        pipeline, step1, step2 = two_step_pipeline
+        received_prompts: list[str] = []
+
+        async def send_message(session_id, prompt, agent=None):
+            received_prompts.append(prompt)
+            return make_message_response("plain prose output")
+
+        mock_client.send_message.side_effect = send_message
+        template = PipelineTemplate(
+            name="quick_fix",
+            description="Quick fix",
+            steps=[
+                PipelineStep(agent="developer", description="step 1"),
+                PipelineStep(agent="developer", description="step 2"),
+            ],
+        )
+        runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30, registry=mock_registry)
+        await runner.run_pipeline(pipeline, template)
+
+        assert received_prompts[1] == "plain prose output"
+
+
+class TestAuditEventsForHandoffs:
+    async def test_audit_event_handoff_created_written_on_success(self, db_session, mock_client, pipeline_and_step):
+        """A handoff_created AuditEvent with has_structured_data=true is written on structured output."""
+        import json
+
+        from sqlalchemy import select
+
+        from app.models import AuditEvent
+        from app.services.pipeline_runner import PipelineRunner
+
+        _, step = pipeline_and_step
+        mock_client.send_message.return_value = make_message_response(STRUCTURED_OUTPUT)
+        runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30)
+        await runner.run_step(step, make_agent_profile(), "prompt")
+
+        result = await db_session.execute(select(AuditEvent).where(AuditEvent.event_type == "handoff_created"))
+        event = result.scalar_one()
+        payload = json.loads(event.payload_json)
+        assert payload["has_structured_data"] is True
+
+    async def test_audit_event_handoff_extraction_failed_written_on_failure(
+        self, db_session, mock_client, pipeline_and_step
+    ):
+        """Both handoff_created (has_structured_data=false) and handoff_extraction_failed are written."""
+        import json
+
+        from sqlalchemy import select
+
+        from app.models import AuditEvent
+        from app.services.pipeline_runner import PipelineRunner
+
+        _, step = pipeline_and_step
+        mock_client.send_message.return_value = make_message_response("plain prose, no structure")
+        runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30)
+        await runner.run_step(step, make_agent_profile(), "prompt")
+
+        result = await db_session.execute(select(AuditEvent))
+        events = result.scalars().all()
+        event_types = {e.event_type for e in events}
+        assert "handoff_created" in event_types
+        assert "handoff_extraction_failed" in event_types
+
+        created = next(e for e in events if e.event_type == "handoff_created")
+        payload = json.loads(created.payload_json)
+        assert payload["has_structured_data"] is False
+
+
+class TestResumePipelineContextHeader:
+    async def test_resume_pipeline_uses_context_header_from_metadata_json(self, db_session, mock_client, mock_registry):
+        """resume_pipeline uses to_context_header() when metadata_json is set on last done step."""
+        from app.schemas.handoff import HandoffSchema
+        from app.services.pipeline_runner import PipelineRunner
+
+        pipeline = Pipeline(
+            title="Resume Header Pipeline",
+            template="quick_fix",
+            prompt="original prompt",
+            status=PipelineStatus.running,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        db_session.add(pipeline)
+        await db_session.flush()
+
+        step1 = Step(
+            pipeline_id=pipeline.id,
+            agent_name="developer",
+            order_index=0,
+            status=StepStatus.done,
+            started_at=datetime.now(UTC),
+            finished_at=datetime.now(UTC),
+        )
+        step2 = Step(
+            pipeline_id=pipeline.id,
+            agent_name="developer",
+            order_index=1,
+            status=StepStatus.pending,
+        )
+        db_session.add(step1)
+        db_session.add(step2)
+        await db_session.flush()
+
+        schema = HandoffSchema(
+            what_was_done="Did the first thing.",
+            next_agent_context="Continue with second thing.",
+        )
+        handoff = Handoff(
+            step_id=step1.id,
+            content_md="raw content",
+            metadata_json=schema.model_dump_json(exclude_none=True),
+        )
+        db_session.add(handoff)
+        await db_session.commit()
+
+        received_prompts: list[str] = []
+
+        async def capturing_send(session_id, prompt, agent=None):
+            received_prompts.append(prompt)
+            return make_message_response("resumed output")
+
+        mock_client.send_message.side_effect = capturing_send
+        runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30, registry=mock_registry)
+        await runner.resume_pipeline(pipeline, template=None)
+
+        assert received_prompts[0].startswith("## Handoff from previous step")

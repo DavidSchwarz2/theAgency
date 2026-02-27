@@ -1,6 +1,7 @@
 """REST API router for pipeline management."""
 
 import asyncio
+import json
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -14,7 +15,13 @@ from app.adapters.opencode_client import OpenCodeClient
 from app.database import get_db
 from app.models import Pipeline, PipelineStatus, Step, StepStatus
 from app.routers.registry import get_registry
-from app.schemas.pipeline import PipelineCreateRequest, PipelineDetailResponse, PipelineResponse
+from app.schemas.pipeline import (
+    HandoffResponse,
+    PipelineCreateRequest,
+    PipelineDetailResponse,
+    PipelineResponse,
+    StepStatusResponse,
+)
 from app.schemas.registry import PipelineTemplate
 from app.services.agent_registry import AgentRegistry
 from app.services.pipeline_runner import PipelineRunner
@@ -116,13 +123,51 @@ async def get_pipeline(
     pipeline_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> PipelineDetailResponse:
-    """Return a pipeline with its steps, or 404 if not found."""
-    result = await db.execute(select(Pipeline).options(selectinload(Pipeline.steps)).where(Pipeline.id == pipeline_id))
+    """Return a pipeline with its steps and latest handoff per step, or 404 if not found."""
+    result = await db.execute(
+        select(Pipeline)
+        .options(selectinload(Pipeline.steps).selectinload(Step.handoffs))
+        .where(Pipeline.id == pipeline_id)
+    )
     pipeline = result.scalar_one_or_none()
     if pipeline is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pipeline not found")
 
-    return PipelineDetailResponse.model_validate(pipeline)
+    step_responses = []
+    for step in sorted(pipeline.steps, key=lambda s: s.order_index):
+        latest = max(step.handoffs, key=lambda h: h.id) if step.handoffs else None
+        metadata = json.loads(latest.metadata_json) if latest and latest.metadata_json else None
+        handoff_resp = (
+            HandoffResponse(
+                id=latest.id,
+                content_md=latest.content_md,
+                metadata=metadata,
+                created_at=latest.created_at,
+            )
+            if latest
+            else None
+        )
+        step_responses.append(
+            StepStatusResponse(
+                id=step.id,
+                agent_name=step.agent_name,
+                order_index=step.order_index,
+                status=step.status,
+                started_at=step.started_at,
+                finished_at=step.finished_at,
+                latest_handoff=handoff_resp,
+            )
+        )
+
+    return PipelineDetailResponse(
+        id=pipeline.id,
+        title=pipeline.title,
+        template=pipeline.template,
+        status=pipeline.status,
+        created_at=pipeline.created_at,
+        updated_at=pipeline.updated_at,
+        steps=step_responses,
+    )
 
 
 # ---------------------------------------------------------------------------

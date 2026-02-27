@@ -1,6 +1,7 @@
 """PipelineRunner — core orchestration service for sequential agent pipelines."""
 
 import asyncio
+import json
 from datetime import UTC, datetime
 
 import structlog
@@ -10,9 +11,11 @@ from sqlalchemy.orm import selectinload
 
 from app.adapters.opencode_client import OpenCodeClient, OpenCodeClientError
 from app.adapters.opencode_models import MessageResponse
-from app.models import Handoff, Pipeline, PipelineStatus, Step, StepStatus
+from app.models import AuditEvent, Handoff, Pipeline, PipelineStatus, Step, StepStatus
+from app.schemas.handoff import HandoffSchema
 from app.schemas.registry import AgentProfile, PipelineTemplate
 from app.services.agent_registry import AgentRegistry
+from app.services.handoff_extractor import HandoffExtractor
 
 logger = structlog.get_logger(__name__)
 
@@ -38,11 +41,13 @@ class PipelineRunner:
         db: AsyncSession,
         step_timeout: float = 600,
         registry: "AgentRegistry | None" = None,
+        extractor: "HandoffExtractor | None" = None,
     ) -> None:
         self._client = client
         self._db = db
         self._step_timeout = step_timeout
         self._registry = registry
+        self._extractor = extractor or HandoffExtractor()
         self._current_session_id: str | None = None
 
     @property
@@ -55,13 +60,14 @@ class PipelineRunner:
         step: Step,
         agent_profile: AgentProfile,
         prompt: str,
-    ) -> str:
+    ) -> tuple[str, HandoffSchema | None]:
         """Execute one step synchronously.
 
         Creates an OpenCode session, sends the prompt to the agent, waits for the
         response, persists a Handoff record, and updates the step status.
 
-        Returns the assistant output text on success.
+        Returns a tuple of (output_text, handoff_schema). handoff_schema is None
+        if structured extraction failed.
         Raises StepExecutionError on failure or timeout.
         """
         session_info = await self._client.create_session(title=f"{step.agent_name}-{step.id}")
@@ -82,8 +88,8 @@ class PipelineRunner:
                 timeout=self._step_timeout,
             )
             output_text = self._extract_output(response)
-            await self._persist_success(step, output_text)
-            return output_text
+            handoff_schema = await self._persist_success(step, output_text)
+            return output_text, handoff_schema
 
         except TimeoutError:
             logger.warning("step_timeout", step_id=step.id, timeout=self._step_timeout)
@@ -119,15 +125,38 @@ class PipelineRunner:
             return ""
         return "\n".join(texts)
 
-    async def _persist_success(self, step: Step, output_text: str) -> None:
+    async def _persist_success(self, step: Step, output_text: str) -> HandoffSchema | None:
+        handoff_schema = self._extractor.extract(output_text)
+
         handoff = Handoff(
             step_id=step.id,
             content_md=output_text,
+            metadata_json=handoff_schema.model_dump_json(exclude_none=True) if handoff_schema is not None else None,
         )
         self._db.add(handoff)
         step.status = StepStatus.done
         step.finished_at = datetime.now(UTC)
+        await self._db.flush()  # assigns handoff.id before we reference it in audit payload
+
+        audit_created = AuditEvent(
+            pipeline_id=step.pipeline_id,
+            step_id=step.id,
+            event_type="handoff_created",
+            payload_json=json.dumps({"handoff_id": handoff.id, "has_structured_data": handoff_schema is not None}),
+        )
+        self._db.add(audit_created)
+
+        if handoff_schema is None:
+            audit_failed = AuditEvent(
+                pipeline_id=step.pipeline_id,
+                step_id=step.id,
+                event_type="handoff_extraction_failed",
+                payload_json=json.dumps({"handoff_id": handoff.id}),
+            )
+            self._db.add(audit_failed)
+
         await self._db.commit()
+        return handoff_schema
 
     async def _persist_failure(self, step: Step) -> None:
         step.status = StepStatus.failed
@@ -161,8 +190,11 @@ class PipelineRunner:
                 return
 
             try:
-                output = await self.run_step(step, agent_profile, current_prompt)
-                current_prompt = output
+                output_text, handoff_schema = await self.run_step(step, agent_profile, current_prompt)
+                if handoff_schema is not None:
+                    current_prompt = handoff_schema.to_context_header(agent_name=step.agent_name)
+                else:
+                    current_prompt = output_text
             except StepExecutionError:
                 pipeline.status = PipelineStatus.failed
                 pipeline.updated_at = datetime.now(UTC)
@@ -236,7 +268,11 @@ class PipelineRunner:
             if step.status == StepStatus.done and step.handoffs:
                 # Use the most recently created handoff
                 latest_handoff = max(step.handoffs, key=lambda h: h.id)
-                current_prompt = latest_handoff.content_md
+                if latest_handoff.metadata_json:
+                    schema = HandoffSchema.model_validate_json(latest_handoff.metadata_json)
+                    current_prompt = schema.to_context_header(agent_name=step.agent_name)
+                else:
+                    current_prompt = latest_handoff.content_md
 
         # Find the first non-done step.
         remaining = [s for s in steps if s.status != StepStatus.done]

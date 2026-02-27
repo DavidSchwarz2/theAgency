@@ -14,6 +14,20 @@ class PipelineCreateRequest(BaseModel):
     branch: str | None = None
 
 
+class HandoffResponse(BaseModel):
+    """Handoff data for a single step.
+
+    Constructed manually — not via ORM auto-mapping, because the ORM Handoff model
+    stores metadata as a JSON string (metadata_json) while this schema exposes it
+    as a parsed dict.
+    """
+
+    id: int
+    content_md: str
+    metadata: dict | None = None
+    created_at: datetime
+
+
 class StepStatusResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -23,6 +37,7 @@ class StepStatusResponse(BaseModel):
     status: StepStatus
     started_at: datetime | None
     finished_at: datetime | None
+    latest_handoff: HandoffResponse | None = None
 
 
 class PipelineResponse(BaseModel):
