@@ -10,6 +10,7 @@ from app.adapters.opencode_client import OpenCodeClient
 from app.config.config import settings
 from app.database import AsyncSessionLocal
 from app.routers import approvals as approvals_router
+from app.routers import audit as audit_router
 from app.routers import events, health
 from app.routers import pipelines as pipelines_router
 from app.routers import registry as registry_router
@@ -119,3 +120,4 @@ app.include_router(events.router)
 app.include_router(registry_router.router)
 app.include_router(pipelines_router.router)
 app.include_router(approvals_router.router)
+app.include_router(audit_router.router)
