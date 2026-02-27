@@ -3,8 +3,13 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
+    "dev": "nx run-many --targets=serve,dev --parallel",
     "dev:backend": "nx run backend:serve",
-    "dev:frontend": "nx run frontend:dev"
+    "dev:frontend": "nx run frontend:dev",
+    "build": "nx run frontend:build",
+    "lint": "nx run-many -t lint",
+    "type-check": "nx run-many -t type-check",
+    "test": "nx run backend:test"
   },
   "devDependencies": {
     "nx": "^20.0.0"

@@ -3,16 +3,20 @@ node = "22"
 python = "3.12"
 
 [tasks.deps]
-description = "Install all dependencies"
+description = "Install all dependencies (root npm + backend uv)"
 run = """
+npm install
 uv sync --project backend
-cd frontend && npm install
 """
 
+[tasks.dev]
+description = "Start backend and frontend in parallel via NX"
+run = "npx nx run-many --targets=serve,dev --parallel"
+
 [tasks.dev-backend]
-description = "Start backend dev server"
-run = "cd backend && uv run uvicorn app.main:app --reload --port 8000"
+description = "Start backend dev server via NX"
+run = "npx nx run backend:serve"
 
 [tasks.dev-frontend]
-description = "Start frontend dev server"
-run = "cd frontend && npm run dev"
+description = "Start frontend dev server via NX"
+run = "npx nx run frontend:dev"

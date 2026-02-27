@@ -23,8 +23,8 @@ manual reload because the UI subscribes to the backend's Server-Sent Events stre
 - [x] (2026-02-27 10:30Z) Milestone 4: Audit Trail tab — filterable, paginated, linked from a navigation bar.
 - [x] (2026-02-27 11:00Z) Backend GET /pipelines list endpoint added with 3 TDD tests (TestListPipelines); 126 backend tests passing.
 - [x] (2026-02-27 11:15Z) Post-implementation code-quality review — all MUST FIX / SHOULD FIX resolved (see Surprises & Discoveries).
-- [ ] Commit (code + ExecPlan together).
-- [ ] ExecPlan moved to completed/, issue closed.
+- [x] (2026-02-27 11:25Z) Commit (code + ExecPlan together). Commit: 9a0462b
+- [x] (2026-02-27 11:30Z) ExecPlan moved to completed/, issue closed.
 
 ## Surprises & Discoveries
 
