@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Route, Routes } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import NavBar from '@/components/NavBar'
+import OpenCodeStatus from '@/components/OpenCodeStatus'
 import PipelineList from '@/pages/PipelineList'
 import AuditTrail from '@/pages/AuditTrail'
 
@@ -40,6 +41,7 @@ function App() {
         />
         <span className="text-gray-500">{connected ? 'live' : 'reconnecting…'}</span>
       </div>
+      <OpenCodeStatus />
       <main className="flex-1 p-6">
         <Routes>
           <Route path="/" element={<PipelineList />} />

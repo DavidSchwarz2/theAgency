@@ -7,7 +7,10 @@ import type {
   AgentProfileResponse,
   AuditEvent,
   AuditQueryParams,
+  FsBrowseResponse,
   GitHubIssueResponse,
+  OpenCodeStartResponse,
+  OpenCodeStatusResponse,
   Pipeline,
   PipelineCreateRequest,
   PipelineDetail,
@@ -82,4 +85,20 @@ export function fetchAgents(): Promise<AgentProfileResponse[]> {
 export function fetchGitHubIssue(repo: string, number: number): Promise<GitHubIssueResponse> {
   const params = new URLSearchParams({ repo, number: String(number) })
   return apiFetch<GitHubIssueResponse>(`/registry/github-issue?${params.toString()}`)
+}
+
+export function fetchOpenCodeStatus(): Promise<OpenCodeStatusResponse> {
+  return apiFetch<OpenCodeStatusResponse>('/health/opencode')
+}
+
+export function startOpenCode(): Promise<OpenCodeStartResponse> {
+  return apiFetch<OpenCodeStartResponse>('/health/opencode/start', { method: 'POST' })
+}
+
+export function fetchBrowse(path?: string, dirsOnly = false): Promise<FsBrowseResponse> {
+  const params = new URLSearchParams()
+  if (path) params.set('path', path)
+  if (dirsOnly) params.set('dirs_only', 'true')
+  const qs = params.toString()
+  return apiFetch<FsBrowseResponse>(`/fs/browse${qs ? `?${qs}` : ''}`)
 }

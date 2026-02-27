@@ -107,3 +107,27 @@ export interface GitHubIssueResponse {
   body: string | null
   labels: string[]
 }
+
+/** Returned by GET /health/opencode. */
+export interface OpenCodeStatusResponse {
+  available: boolean
+}
+
+/** Returned by POST /health/opencode/start. */
+export interface OpenCodeStartResponse {
+  available: boolean
+  started: boolean
+}
+
+/** Returned by GET /fs/browse. */
+export interface FsEntry {
+  name: string
+  path: string
+  is_dir: boolean
+}
+
+export interface FsBrowseResponse {
+  path: string
+  parent: string | null
+  entries: FsEntry[]
+}

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { useQuery } from '@tanstack/react-query'
 import { fetchAgents, fetchGitHubIssue, fetchPipelineTemplates } from '@/api/client'
 import { useCreatePipeline } from '@/hooks/useCreatePipeline'
+import DirectoryPicker from '@/components/DirectoryPicker'
 import type { CustomStepInput } from '@/types/api'
 
 interface Props {
@@ -62,6 +63,9 @@ export default function NewPipelineModal({ open, onClose }: Props) {
   const [ghFetching, setGhFetching] = useState(false)
   const [ghPreview, setGhPreview] = useState<string | null>(null)
   const [ghError, setGhError] = useState<string | null>(null)
+
+  // ---- Directory picker ----
+  const [showDirPicker, setShowDirPicker] = useState(false)
 
   const createPipeline = useCreatePipeline()
   const firstInputRef = useRef<HTMLInputElement>(null)
@@ -493,14 +497,24 @@ export default function NewPipelineModal({ open, onClose }: Props) {
             <label className="mb-1 block text-sm text-gray-300" htmlFor="np-working-dir">
               Working Directory <span className="text-gray-500">(optional)</span>
             </label>
-            <input
-              id="np-working-dir"
-              type="text"
-              value={workingDir}
-              onChange={(e) => setWorkingDir(e.target.value)}
-              className={inputCls}
-              placeholder="/path/to/project"
-            />
+            <div className="flex gap-2">
+              <input
+                id="np-working-dir"
+                type="text"
+                value={workingDir}
+                onChange={(e) => setWorkingDir(e.target.value)}
+                className={`${inputCls} flex-1`}
+                placeholder="/path/to/project"
+              />
+              <button
+                type="button"
+                onClick={() => setShowDirPicker(true)}
+                className="rounded border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-gray-300 hover:bg-gray-700 hover:text-white flex-shrink-0"
+                title="Browse…"
+              >
+                Browse…
+              </button>
+            </div>
           </div>
 
           {/* Error */}
@@ -527,6 +541,16 @@ export default function NewPipelineModal({ open, onClose }: Props) {
           </div>
         </form>
       </div>
+
+      {showDirPicker && (
+        <DirectoryPicker
+          onSelect={(path) => {
+            setWorkingDir(path)
+            setShowDirPicker(false)
+          }}
+          onClose={() => setShowDirPicker(false)}
+        />
+      )}
     </div>
   )
 }
