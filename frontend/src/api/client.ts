@@ -3,7 +3,16 @@
  * /api/* → http://localhost:8000/* (strips /api prefix).
  */
 
-import type { AuditEvent, AuditQueryParams, Pipeline, PipelineCreateRequest, PipelineDetail, PipelineTemplateResponse } from '@/types/api'
+import type {
+  AgentProfileResponse,
+  AuditEvent,
+  AuditQueryParams,
+  GitHubIssueResponse,
+  Pipeline,
+  PipelineCreateRequest,
+  PipelineDetail,
+  PipelineTemplateResponse,
+} from '@/types/api'
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const hasBody = options?.body !== undefined
@@ -64,4 +73,13 @@ export function createPipeline(req: PipelineCreateRequest): Promise<Pipeline> {
 
 export function fetchPipelineTemplates(): Promise<PipelineTemplateResponse[]> {
   return apiFetch<PipelineTemplateResponse[]>('/registry/pipelines')
+}
+
+export function fetchAgents(): Promise<AgentProfileResponse[]> {
+  return apiFetch<AgentProfileResponse[]>('/registry/agents')
+}
+
+export function fetchGitHubIssue(repo: string, number: number): Promise<GitHubIssueResponse> {
+  const params = new URLSearchParams({ repo, number: String(number) })
+  return apiFetch<GitHubIssueResponse>(`/registry/github-issue?${params.toString()}`)
 }

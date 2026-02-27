@@ -4,7 +4,9 @@ import asyncio
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
+import respx
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -13,6 +15,7 @@ from app.main import app
 from app.models import Base, Pipeline, PipelineStatus, Step, StepStatus
 from app.routers.pipelines import get_opencode_client
 from app.routers.registry import get_registry
+from app.services.pipeline_runner import APPROVAL_SENTINEL
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -55,6 +58,7 @@ async def test_client(db_engine, make_registry, mock_opencode_client):
     app.state.approval_events = {}
     app.state.db_session_factory = session_factory
     app.state.step_timeout = 600.0
+    app.state.github_client = None
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac, session_factory
@@ -751,3 +755,351 @@ class TestCreatePipelineWorkingDir:
         response = await client.get(f"/pipelines/{pipeline_id}")
         assert response.status_code == 200
         assert response.json()["working_dir"] == "/srv/repo"
+
+
+# ---------------------------------------------------------------------------
+# Issue #16 — Free Agent Composition (custom steps)
+# ---------------------------------------------------------------------------
+
+
+class TestCreatePipelineCustomSteps:
+    async def test_custom_steps_returns_201(self, test_client):
+        """POST /pipelines with custom_steps (no template) returns 201."""
+        client, _ = test_client
+
+        with patch("app.routers.pipelines.PipelineRunner") as mock_runner_cls:
+            mock_runner = MagicMock()
+            mock_runner.run_pipeline = AsyncMock()
+            mock_runner_cls.return_value = mock_runner
+
+            response = await client.post(
+                "/pipelines",
+                json={
+                    "custom_steps": [{"type": "agent", "agent": "developer"}],
+                    "title": "Custom Run",
+                    "prompt": "Do the thing",
+                },
+            )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["template"] == "__custom__"
+        assert data["title"] == "Custom Run"
+
+    async def test_custom_steps_creates_correct_step_records(self, test_client):
+        """POST /pipelines with custom_steps creates Step records in DB."""
+        from sqlalchemy import select as sa_select
+
+        client, session_factory = test_client
+
+        with patch("app.routers.pipelines.PipelineRunner") as mock_runner_cls:
+            mock_runner = MagicMock()
+            mock_runner.run_pipeline = AsyncMock()
+            mock_runner_cls.return_value = mock_runner
+
+            response = await client.post(
+                "/pipelines",
+                json={
+                    "custom_steps": [
+                        {"type": "agent", "agent": "developer"},
+                        {"type": "approval"},
+                        {"type": "agent", "agent": "reviewer"},
+                    ],
+                    "title": "Multi-step",
+                    "prompt": "Go",
+                },
+            )
+
+        assert response.status_code == 201
+        pipeline_id = response.json()["id"]
+
+        async with session_factory() as session:
+            result = await session.execute(
+                sa_select(Step).where(Step.pipeline_id == pipeline_id).order_by(Step.order_index)
+            )
+            steps = result.scalars().all()
+
+        assert len(steps) == 3
+        assert steps[0].agent_name == "developer"
+        assert steps[1].agent_name == APPROVAL_SENTINEL
+        assert steps[2].agent_name == "reviewer"
+
+    async def test_custom_steps_model_override_stored(self, test_client):
+        """POST /pipelines with custom_steps and per-step model stores model on Step."""
+        from sqlalchemy import select as sa_select
+
+        client, session_factory = test_client
+
+        with patch("app.routers.pipelines.PipelineRunner") as mock_runner_cls:
+            mock_runner = MagicMock()
+            mock_runner.run_pipeline = AsyncMock()
+            mock_runner_cls.return_value = mock_runner
+
+            response = await client.post(
+                "/pipelines",
+                json={
+                    "custom_steps": [{"type": "agent", "agent": "developer", "model": "claude-opus"}],
+                    "title": "Model Override",
+                    "prompt": "Go",
+                },
+            )
+
+        assert response.status_code == 201
+        pipeline_id = response.json()["id"]
+
+        async with session_factory() as session:
+            result = await session.execute(sa_select(Step).where(Step.pipeline_id == pipeline_id))
+            steps = result.scalars().all()
+
+        assert steps[0].model == "claude-opus"
+
+    async def test_neither_template_nor_custom_steps_returns_422(self, test_client):
+        """POST /pipelines with neither template nor custom_steps returns 422."""
+        client, _ = test_client
+
+        response = await client.post(
+            "/pipelines",
+            json={"title": "Broken", "prompt": "fail"},
+        )
+        assert response.status_code == 422
+
+    async def test_both_template_and_custom_steps_returns_422(self, test_client):
+        """POST /pipelines with both template and custom_steps returns 422."""
+        client, _ = test_client
+
+        response = await client.post(
+            "/pipelines",
+            json={
+                "template": "quick_fix",
+                "custom_steps": [{"type": "agent", "agent": "developer"}],
+                "title": "Conflict",
+                "prompt": "fail",
+            },
+        )
+        assert response.status_code == 422
+
+    async def test_unknown_agent_in_custom_steps_returns_422(self, test_client):
+        """POST /pipelines with unknown agent in custom_steps returns 422."""
+        client, _ = test_client
+
+        with patch("app.routers.pipelines.PipelineRunner") as mock_runner_cls:
+            mock_runner = MagicMock()
+            mock_runner.run_pipeline = AsyncMock()
+            mock_runner_cls.return_value = mock_runner
+
+            response = await client.post(
+                "/pipelines",
+                json={
+                    "custom_steps": [{"type": "agent", "agent": "ghost_agent"}],
+                    "title": "Bad Agent",
+                    "prompt": "fail",
+                },
+            )
+
+        assert response.status_code == 422
+
+    async def test_empty_custom_steps_returns_422(self, test_client):
+        """POST /pipelines with empty custom_steps list returns 422."""
+        client, _ = test_client
+
+        response = await client.post(
+            "/pipelines",
+            json={"custom_steps": [], "title": "Empty", "prompt": "fail"},
+        )
+        assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Issue #14 — Local agents from working directory (router integration)
+# ---------------------------------------------------------------------------
+
+
+class TestLocalAgentMerge:
+    async def test_local_agent_default_model_used_for_step(self, test_client, tmp_path):
+        """POST /pipelines with working_dir uses local agent's default_model for step model."""
+        import yaml
+        from sqlalchemy import select as sa_select
+
+        client, session_factory = test_client
+
+        # Write a local developer agent with a custom default_model
+        agents_dir = tmp_path / ".opencode" / "agents"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "developer.yaml").write_text(
+            yaml.dump(
+                {
+                    "name": "developer",
+                    "description": "Local developer",
+                    "opencode_agent": "developer",
+                    "default_model": "local-model-override",
+                    "system_prompt_additions": "",
+                }
+            )
+        )
+
+        with patch("app.routers.pipelines.PipelineRunner") as mock_runner_cls:
+            mock_runner = MagicMock()
+            mock_runner.run_pipeline = AsyncMock()
+            mock_runner_cls.return_value = mock_runner
+
+            response = await client.post(
+                "/pipelines",
+                json={
+                    "template": "quick_fix",
+                    "title": "Local Agent Test",
+                    "prompt": "Do the thing",
+                    "working_dir": str(tmp_path),
+                },
+            )
+
+        assert response.status_code == 201
+        pipeline_id = response.json()["id"]
+
+        async with session_factory() as session:
+            result = await session.execute(
+                sa_select(Step).where(Step.pipeline_id == pipeline_id).order_by(Step.order_index)
+            )
+            steps = result.scalars().all()
+
+        # Both steps are "developer" which now has default_model="local-model-override"
+        assert steps[0].model == "local-model-override"
+
+
+# ---------------------------------------------------------------------------
+# Issue #13 — GitHub Issue as Context (prompt enrichment)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def test_client_with_github(db_engine, make_registry, mock_opencode_client):
+    """Test client with a real GitHubClient wired into app.state."""
+    from app.adapters.github_client import GitHubClient
+
+    registry = make_registry()
+    session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
+
+    async def override_get_db():
+        async with session_factory() as session:
+            yield session
+
+    github_client = GitHubClient(token="test-token")
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_registry] = lambda: registry
+    app.dependency_overrides[get_opencode_client] = lambda: mock_opencode_client
+    app.state.pipeline_tasks = {}
+    app.state.active_runners = {}
+    app.state.approval_events = {}
+    app.state.db_session_factory = session_factory
+    app.state.step_timeout = 600.0
+    app.state.github_client = github_client
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac, session_factory
+
+    app.dependency_overrides.clear()
+    app.state.github_client = None
+    await github_client.close()
+
+
+class TestCreatePipelineGitHubEnrichment:
+    async def test_prompt_enriched_with_github_issue(self, test_client_with_github):
+        """POST /pipelines with github_issue_repo + github_issue_number enriches the stored prompt."""
+        client, session_factory = test_client_with_github
+
+        with respx.mock, patch("app.routers.pipelines.PipelineRunner") as mock_runner_cls:
+            respx.get("https://api.github.com/repos/owner/repo/issues/42").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "number": 42,
+                        "title": "Fix the thing",
+                        "body": "It is broken.",
+                        "labels": [{"name": "bug"}],
+                    },
+                )
+            )
+            mock_runner = MagicMock()
+            mock_runner.run_pipeline = AsyncMock()
+            mock_runner_cls.return_value = mock_runner
+
+            response = await client.post(
+                "/pipelines",
+                json={
+                    "template": "quick_fix",
+                    "title": "GitHub Test",
+                    "prompt": "Original prompt",
+                    "github_issue_repo": "owner/repo",
+                    "github_issue_number": 42,
+                },
+            )
+
+        assert response.status_code == 201
+        pipeline_id = response.json()["id"]
+
+        async with session_factory() as session:
+            from app.models import Pipeline as PipelineModel
+
+            pipeline = await session.get(PipelineModel, pipeline_id)
+            assert pipeline is not None
+            assert "## GitHub Issue #42: Fix the thing" in pipeline.prompt
+            assert "It is broken." in pipeline.prompt
+            assert "Labels: bug" in pipeline.prompt
+            assert "Original prompt" in pipeline.prompt
+
+    async def test_prompt_enrichment_failed_fetch_falls_back_to_original(self, test_client_with_github):
+        """If the GitHub issue fetch fails, create_pipeline still succeeds with the original prompt."""
+        client, session_factory = test_client_with_github
+
+        with respx.mock, patch("app.routers.pipelines.PipelineRunner") as mock_runner_cls:
+            respx.get("https://api.github.com/repos/owner/repo/issues/99").mock(
+                return_value=httpx.Response(404, json={"message": "Not Found"})
+            )
+            mock_runner = MagicMock()
+            mock_runner.run_pipeline = AsyncMock()
+            mock_runner_cls.return_value = mock_runner
+
+            response = await client.post(
+                "/pipelines",
+                json={
+                    "template": "quick_fix",
+                    "title": "Fallback Test",
+                    "prompt": "Fallback prompt",
+                    "github_issue_repo": "owner/repo",
+                    "github_issue_number": 99,
+                },
+            )
+
+        assert response.status_code == 201
+        pipeline_id = response.json()["id"]
+
+        async with session_factory() as session:
+            from app.models import Pipeline as PipelineModel
+
+            pipeline = await session.get(PipelineModel, pipeline_id)
+            assert pipeline is not None
+            assert pipeline.prompt == "Fallback prompt"
+
+    async def test_no_github_fields_prompt_unchanged(self, test_client):
+        """POST /pipelines without github fields stores the prompt unmodified."""
+        client, session_factory = test_client
+
+        with patch("app.routers.pipelines.PipelineRunner") as mock_runner_cls:
+            mock_runner = MagicMock()
+            mock_runner.run_pipeline = AsyncMock()
+            mock_runner_cls.return_value = mock_runner
+
+            response = await client.post(
+                "/pipelines",
+                json={"template": "quick_fix", "title": "No GH", "prompt": "Plain prompt"},
+            )
+
+        assert response.status_code == 201
+        pipeline_id = response.json()["id"]
+
+        async with session_factory() as session:
+            from app.models import Pipeline as PipelineModel
+
+            pipeline = await session.get(PipelineModel, pipeline_id)
+            assert pipeline is not None
+            assert pipeline.prompt == "Plain prompt"

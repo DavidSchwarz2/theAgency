@@ -108,3 +108,10 @@ class PipelineTemplateResponse(_ResponseBase):
     name: str
     description: str
     steps: list[PipelineStepResponse]
+
+
+class GitHubIssueResponse(BaseModel):
+    number: int
+    title: str
+    body: str | None = None
+    labels: list[str] = []

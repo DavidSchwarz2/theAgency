@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     step_timeout_seconds: int = 600
     agents_config_path: str = "config/agents.yaml"
     pipelines_config_path: str = "config/pipelines.yaml"
+    github_token: str | None = None
 
 
 settings = Settings()

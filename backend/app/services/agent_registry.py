@@ -21,6 +21,19 @@ class AgentRegistry:
         self._config: RegistryConfig | None = None
         self.reload()
 
+    @classmethod
+    def from_config(cls, config: RegistryConfig) -> "AgentRegistry":
+        """Create an ephemeral AgentRegistry wrapping an already-built RegistryConfig.
+
+        This factory bypasses file I/O and the file-watcher setup. Use it to create
+        short-lived per-request registries (e.g. after merging local agents).
+        """
+        instance = object.__new__(cls)
+        instance._agents_path = None
+        instance._pipelines_path = None
+        instance._config = config
+        return instance
+
     def reload(self) -> None:
         """Reload configuration from YAML files (synchronous I/O).
 
@@ -73,6 +86,45 @@ class AgentRegistry:
 
     def get_pipeline(self, name: str) -> PipelineTemplate | None:
         return next((p for p in self.pipelines() if p.name == name), None)
+
+    def merge_with_local(self, working_dir: str) -> "AgentRegistry":
+        """Return a new ephemeral AgentRegistry with local agents merged in.
+
+        Scans ``{working_dir}/.opencode/agents/*.yaml`` for project-local agent definitions.
+        Each YAML file must be a single agent document matching the AgentProfile schema.
+        Local agents with the same name as a global agent override the global one; new names
+        are appended. Malformed files are logged as warnings and skipped.
+
+        The original registry is never mutated. The returned instance has no file paths and
+        no file watcher.
+        """
+        agents_dir = Path(working_dir) / ".opencode" / "agents"
+        if not agents_dir.is_dir():
+            return self
+
+        local_agents: list[AgentProfile] = []
+        for yaml_file in sorted(agents_dir.glob("*.yaml")):
+            try:
+                with open(yaml_file) as f:
+                    data = yaml.safe_load(f)
+                agent = AgentProfile.model_validate(data)
+                local_agents.append(agent)
+            except Exception:
+                logger.warning("local_agent_load_failed", path=str(yaml_file), exc_info=True)
+
+        if not local_agents:
+            return self
+
+        # Merge: global agents as base, local agents override by name or extend.
+        merged: dict[str, AgentProfile] = {a.name: a for a in self.agents()}
+        for local_agent in local_agents:
+            merged[local_agent.name] = local_agent
+
+        merged_config = RegistryConfig.model_construct(
+            agents=list(merged.values()),
+            pipelines=self._ensure_loaded().pipelines,
+        )
+        return AgentRegistry.from_config(merged_config)
 
 
 async def watch_and_reload(

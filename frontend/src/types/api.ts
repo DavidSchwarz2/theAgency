@@ -58,13 +58,26 @@ export interface AuditQueryParams {
   offset?: number
 }
 
+/** A single step in a custom pipeline composition (Issue #16). */
+export interface CustomStepInput {
+  type: 'agent' | 'approval'
+  agent?: string
+  model?: string
+}
+
 export interface PipelineCreateRequest {
-  template: string
+  /** Named template — mutually exclusive with custom_steps. */
+  template?: string
+  /** Custom step list — mutually exclusive with template. */
+  custom_steps?: CustomStepInput[]
   title: string
   prompt: string
   branch?: string
-  step_models?: Record<number, string>
+  step_models?: Record<string, string>
   working_dir?: string
+  /** GitHub issue enrichment (Issue #13). */
+  github_issue_repo?: string
+  github_issue_number?: number
 }
 
 export interface PipelineTemplateStepResponse {
@@ -77,4 +90,20 @@ export interface PipelineTemplateResponse {
   name: string
   description: string
   steps: PipelineTemplateStepResponse[]
+}
+
+/** Returned by GET /registry/agents. */
+export interface AgentProfileResponse {
+  name: string
+  description: string
+  opencode_agent: string
+  default_model: string | null
+}
+
+/** Returned by GET /registry/github-issue (Issue #13). */
+export interface GitHubIssueResponse {
+  number: number
+  title: string
+  body: string | null
+  labels: string[]
 }

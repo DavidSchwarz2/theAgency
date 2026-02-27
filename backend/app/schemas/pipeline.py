@@ -1,19 +1,47 @@
 """Pydantic schemas for the Pipeline REST API."""
 
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from app.models import ApprovalStatus, PipelineStatus, StepStatus
 
 
+class CustomStepInput(BaseModel):
+    """A single step in a custom (non-template) pipeline."""
+
+    type: Literal["agent", "approval"] = "agent"
+    agent: str | None = None
+    model: str | None = None
+
+    @model_validator(mode="after")
+    def _agent_required_for_agent_steps(self) -> "CustomStepInput":
+        if self.type == "agent" and not self.agent:
+            raise ValueError("agent is required when type='agent'")
+        return self
+
+
 class PipelineCreateRequest(BaseModel):
-    template: str
+    template: str | None = None
+    custom_steps: list[CustomStepInput] | None = None
     title: str
     prompt: str
     branch: str | None = None
     step_models: dict[int, str] | None = None
     working_dir: str | None = None
+    github_issue_repo: str | None = None
+    github_issue_number: int | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_of_template_or_custom_steps(self) -> "PipelineCreateRequest":
+        has_template = self.template is not None
+        has_custom = self.custom_steps is not None
+        if has_template and has_custom:
+            raise ValueError("Provide either 'template' or 'custom_steps', not both")
+        if not has_template and not has_custom:
+            raise ValueError("One of 'template' or 'custom_steps' is required")
+        return self
 
 
 class HandoffResponse(BaseModel):

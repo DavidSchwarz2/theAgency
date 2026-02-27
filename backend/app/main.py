@@ -6,6 +6,7 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.adapters.github_client import GitHubClient
 from app.adapters.opencode_client import OpenCodeClient
 from app.config.config import settings
 from app.database import AsyncSessionLocal
@@ -63,6 +64,10 @@ async def lifespan(app: FastAPI):
     app.state.step_timeout = float(settings.step_timeout_seconds)
     app.state.db_session_factory = AsyncSessionLocal
 
+    # Initialize GitHub client (optional — only when token is configured)
+    github_client: GitHubClient | None = GitHubClient(token=settings.github_token) if settings.github_token else None
+    app.state.github_client = github_client
+
     # Start file watcher for hot-reload
     stop_event = asyncio.Event()
     watcher_task = asyncio.create_task(
@@ -97,6 +102,8 @@ async def lifespan(app: FastAPI):
         await watcher_task
 
     await opencode_client.close()
+    if github_client is not None:
+        await github_client.close()
     logger.info("shutdown")
 
 

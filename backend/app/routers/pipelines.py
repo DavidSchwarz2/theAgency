@@ -11,6 +11,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.adapters.github_client import GitHubClient, GitHubClientError
+from app.adapters.github_models import GitHubIssue
 from app.adapters.opencode_client import OpenCodeClient
 from app.database import get_db
 from app.models import Approval, ApprovalStatus, Pipeline, PipelineStatus, Step, StepStatus
@@ -24,7 +26,7 @@ from app.schemas.pipeline import (
     RejectRequest,
     StepStatusResponse,
 )
-from app.schemas.registry import AgentStep, PipelineTemplate
+from app.schemas.registry import AgentStep, ApprovalStep, PipelineTemplate
 from app.services.agent_registry import AgentRegistry
 from app.services.pipeline_runner import APPROVAL_SENTINEL, PipelineRunner
 
@@ -36,6 +38,12 @@ router = APIRouter(prefix="/pipelines", tags=["pipelines"])
 def get_opencode_client(request: Request) -> OpenCodeClient:
     """FastAPI dependency — reads from app.state.opencode_client."""
     return request.app.state.opencode_client
+
+
+def _format_issue_context(issue: GitHubIssue) -> str:
+    """Format a GitHubIssue into a Markdown context block for prompt prepending."""
+    labels_part = ("\n\nLabels: " + ", ".join(issue.labels)) if issue.labels else ""
+    return f"## GitHub Issue #{issue.number}: {issue.title}\n\n" + (issue.body or "") + labels_part
 
 
 # ---------------------------------------------------------------------------
@@ -67,19 +75,71 @@ async def create_pipeline(
     request: Request,
 ) -> PipelineResponse:
     """Create a pipeline and immediately launch it as a background task."""
-    template: PipelineTemplate | None = registry.get_pipeline(body.template)
-    if template is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Unknown pipeline template: {body.template!r}",
-        )
+    # ---- Merge local agents from working_dir if provided (Issue #14) ----
+    if body.working_dir:
+        effective_registry = registry.merge_with_local(body.working_dir)
+    else:
+        effective_registry = registry
 
-    # Persist the pipeline and its steps.
+    # ---- Resolve template or build one from custom steps (Issue #16) ----
+    if body.template is not None:
+        template: PipelineTemplate | None = effective_registry.get_pipeline(body.template)
+        if template is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Unknown pipeline template: {body.template!r}",
+            )
+        template_name = body.template
+    else:
+        # Custom steps — body.custom_steps is guaranteed non-None by schema validator
+        if not body.custom_steps:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="custom_steps must not be empty",
+            )
+        steps: list[AgentStep | ApprovalStep] = []
+        for cs in body.custom_steps:
+            if cs.type == "agent":
+                if effective_registry.get_agent(cs.agent) is None:  # type: ignore[arg-type]
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail=f"Unknown agent: {cs.agent!r}",
+                    )
+                steps.append(AgentStep(agent=cs.agent, model=cs.model))  # type: ignore[arg-type]
+            else:
+                steps.append(ApprovalStep(type="approval"))
+        template = PipelineTemplate(name="__custom__", description="", steps=steps)
+        template_name = "__custom__"
+
+    # ---- Enrich prompt with GitHub issue context if requested (Issue #13) ----
+    enriched_prompt = body.prompt
+    if body.github_issue_repo and body.github_issue_number is not None:
+        github_client: GitHubClient | None = request.app.state.github_client
+        if github_client is None:
+            logger.info(
+                "github_issue_skipped_no_token",
+                repo=body.github_issue_repo,
+                number=body.github_issue_number,
+            )
+        else:
+            try:
+                issue = await github_client.get_issue(body.github_issue_repo, body.github_issue_number)
+                issue_block = _format_issue_context(issue)
+                enriched_prompt = issue_block + "\n\n---\n\n" + body.prompt
+            except GitHubClientError:
+                logger.warning(
+                    "github_issue_fetch_failed",
+                    repo=body.github_issue_repo,
+                    number=body.github_issue_number,
+                    exc_info=True,
+                )
+
+    # ---- Persist the pipeline and its steps ----
     now = datetime.now(UTC)
     pipeline = Pipeline(
         title=body.title,
-        template=body.template,
-        prompt=body.prompt,
+        template=template_name,
+        prompt=enriched_prompt,
         working_dir=body.working_dir,
         status=PipelineStatus.running,
         created_at=now,
@@ -90,11 +150,15 @@ async def create_pipeline(
 
     for idx, step_def in enumerate(template.steps):
         agent_name = step_def.agent if isinstance(step_def, AgentStep) else APPROVAL_SENTINEL
-        # Resolve model: explicit per-step override first, then agent default.
+        # Resolve model: explicit per-step override first, then step-level model, then agent default.
         step_model: str | None = (body.step_models or {}).get(idx)
         if step_model is None and isinstance(step_def, AgentStep):
-            agent_profile = registry.get_agent(step_def.agent)
-            step_model = agent_profile.default_model if agent_profile is not None else None
+            # Use step-level model from custom step if provided
+            if step_def.model is not None:
+                step_model = step_def.model
+            else:
+                agent_profile = effective_registry.get_agent(step_def.agent)
+                step_model = agent_profile.default_model if agent_profile is not None else None
         step = Step(
             pipeline_id=pipeline.id,
             agent_name=agent_name,
@@ -126,7 +190,7 @@ async def create_pipeline(
                 client=client,
                 db=bg_db,
                 step_timeout=step_timeout,
-                registry=registry,
+                registry=effective_registry,
                 approval_events=app_state.approval_events,
             )
             app_state.active_runners[pipeline_id] = runner

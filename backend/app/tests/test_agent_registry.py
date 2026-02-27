@@ -265,3 +265,113 @@ class TestWatchAndReload:
         # Should exit cleanly without errors
         assert task.done()
         assert task.exception() is None
+
+
+# ---------------------------------------------------------------------------
+# Issue #14 — Local agents from working directory
+# ---------------------------------------------------------------------------
+
+
+class TestMergeWithLocal:
+    def test_no_opencode_agents_dir_returns_same_agents(self, make_registry, tmp_path: Path) -> None:
+        """merge_with_local on a dir without .opencode/agents returns same agent count."""
+        registry = make_registry()
+        merged = registry.merge_with_local(str(tmp_path))
+        assert len(merged.agents()) == len(registry.agents())
+
+    def test_new_local_agent_extends_registry(self, make_registry, tmp_path: Path) -> None:
+        """A new agent in .opencode/agents/ appears in the merged registry."""
+        registry = make_registry()
+        agents_dir = tmp_path / ".opencode" / "agents"
+        agents_dir.mkdir(parents=True)
+        write_yaml(
+            agents_dir / "custom_qa.yaml",
+            {
+                "name": "custom_qa",
+                "description": "Project-specific QA agent",
+                "opencode_agent": "qa",
+                "system_prompt_additions": "",
+            },
+        )
+        merged = registry.merge_with_local(str(tmp_path))
+        assert merged.get_agent("custom_qa") is not None
+        assert len(merged.agents()) == len(registry.agents()) + 1
+
+    def test_local_agent_overrides_global_agent_by_name(self, make_registry, tmp_path: Path) -> None:
+        """A local agent with the same name as a global agent replaces it."""
+        registry = make_registry()
+        agents_dir = tmp_path / ".opencode" / "agents"
+        agents_dir.mkdir(parents=True)
+        write_yaml(
+            agents_dir / "developer.yaml",
+            {
+                "name": "developer",
+                "description": "Project-local developer",
+                "opencode_agent": "developer",
+                "default_model": "gpt-4o",
+                "system_prompt_additions": "Always use TypeScript.",
+            },
+        )
+        merged = registry.merge_with_local(str(tmp_path))
+        local_dev = merged.get_agent("developer")
+        assert local_dev is not None
+        assert local_dev.default_model == "gpt-4o"
+        assert local_dev.system_prompt_additions == "Always use TypeScript."
+        # Total count should not increase (override, not extend)
+        assert len(merged.agents()) == len(registry.agents())
+
+    def test_malformed_local_yaml_is_skipped(self, make_registry, tmp_path: Path) -> None:
+        """A malformed local agent YAML is skipped; valid agents are still loaded."""
+        registry = make_registry()
+        agents_dir = tmp_path / ".opencode" / "agents"
+        agents_dir.mkdir(parents=True)
+        # Malformed: missing required fields
+        (agents_dir / "broken.yaml").write_text("this_is_not_an_agent: true\n")
+        write_yaml(
+            agents_dir / "good.yaml",
+            {
+                "name": "custom_qa",
+                "description": "Good agent",
+                "opencode_agent": "qa",
+                "system_prompt_additions": "",
+            },
+        )
+        merged = registry.merge_with_local(str(tmp_path))
+        # Good agent loaded, broken skipped
+        assert merged.get_agent("custom_qa") is not None
+        assert len(merged.agents()) == len(registry.agents()) + 1
+
+    def test_merge_does_not_mutate_original_registry(self, make_registry, tmp_path: Path) -> None:
+        """merge_with_local returns a new registry; original is unchanged."""
+        registry = make_registry()
+        original_count = len(registry.agents())
+        agents_dir = tmp_path / ".opencode" / "agents"
+        agents_dir.mkdir(parents=True)
+        write_yaml(
+            agents_dir / "extra.yaml",
+            {
+                "name": "extra_agent",
+                "description": "Extra",
+                "opencode_agent": "extra",
+                "system_prompt_additions": "",
+            },
+        )
+        merged = registry.merge_with_local(str(tmp_path))
+        # Original unchanged
+        assert len(registry.agents()) == original_count
+        assert registry.get_agent("extra_agent") is None
+        # Merged has the extra agent
+        assert merged.get_agent("extra_agent") is not None
+
+    def test_from_config_classmethod_wraps_config(self, make_registry) -> None:
+        """AgentRegistry.from_config() creates a working registry without file I/O."""
+        from app.schemas.registry import RegistryConfig
+
+        registry = make_registry()
+        config = RegistryConfig.model_construct(
+            agents=registry.agents(),
+            pipelines=registry.pipelines(),
+        )
+        ephemeral = AgentRegistry.from_config(config)
+        assert len(ephemeral.agents()) == len(registry.agents())
+        assert len(ephemeral.pipelines()) == len(registry.pipelines())
