@@ -449,8 +449,19 @@ async def recover_interrupted_pipelines(
                 # when accessing scalar attributes (e.g. working_dir) from a closed session.
                 result = await sess.execute(select(Pipeline).where(Pipeline.id == pid))
                 fresh_pipeline = result.scalar_one()
-                runner = PipelineRunner(client=client, db=sess, step_timeout=step_timeout, registry=registry)
-                await runner.resume_pipeline(fresh_pipeline, template=None)
+                try:
+                    runner = PipelineRunner(client=client, db=sess, step_timeout=step_timeout, registry=registry)
+                    await runner.resume_pipeline(fresh_pipeline, template=None)
+                except Exception as exc:
+                    logger.error(
+                        "pipeline_recovery_failed",
+                        pipeline_id=pid,
+                        error=str(exc),
+                        exc_info=True,
+                    )
+                    fresh_pipeline.status = PipelineStatus.failed
+                    fresh_pipeline.updated_at = datetime.now(UTC)
+                    await sess.commit()
 
         task = asyncio.create_task(_resume())
         task_set[pipeline.id] = task

@@ -13,6 +13,7 @@ from app.database import AsyncSessionLocal
 from app.routers import approvals as approvals_router
 from app.routers import audit as audit_router
 from app.routers import events, health
+from app.routers import fs as fs_router
 from app.routers import pipelines as pipelines_router
 from app.routers import registry as registry_router
 from app.services.agent_registry import AgentRegistry, watch_and_reload
@@ -78,6 +79,13 @@ async def lifespan(app: FastAPI):
         )
     )
 
+    # Check OpenCode server availability
+    opencode_available = await opencode_client.health_check()
+    if opencode_available:
+        logger.info("opencode_server_available", url=settings.opencode_base_url)
+    else:
+        logger.warning("opencode_server_unavailable", url=settings.opencode_base_url)
+
     # Recover any pipelines that were interrupted by a previous crash
     await recover_interrupted_pipelines(
         db_session_factory=AsyncSessionLocal,
@@ -124,6 +132,7 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(events.router)
+app.include_router(fs_router.router)
 app.include_router(registry_router.router)
 app.include_router(pipelines_router.router)
 app.include_router(approvals_router.router)
