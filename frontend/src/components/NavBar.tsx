@@ -14,6 +14,12 @@ export default function NavBar() {
       <NavLink to="/" end className={linkClass}>
         Pipelines
       </NavLink>
+      <NavLink to="/agents" className={linkClass}>
+        Agents
+      </NavLink>
+      <NavLink to="/templates" className={linkClass}>
+        Templates
+      </NavLink>
       <NavLink to="/audit" className={linkClass}>
         Audit Trail
       </NavLink>

@@ -14,13 +14,21 @@ server.
 
 ## Progress
 
-- [ ] M1: Backend write endpoints (POST/PUT/DELETE for pipelines) — TDD, all tests green
-- [ ] M2: Frontend Templates page with create/edit/delete + NavBar link
-- [ ] ExecPlan finalized: outcomes written, plan moved to completed location per AGENTS.md.
+- [x] M1: Backend write endpoints (POST/PUT/DELETE for pipelines) — TDD, all tests green
+- [x] M2: Frontend Templates page with create/edit/delete + NavBar link
+- [x] Code quality review — all MUST FIX and SHOULD FIX items resolved
+- [x] ExecPlan finalized: outcomes written, plan moved to completed location per AGENTS.md.
 
 ## Surprises & Discoveries
 
-_(fill in as work proceeds)_
+- `PipelineTemplate.model_validate(body.model_dump())` correctly handles the discriminated union
+  steps — Pydantic v2 serializes and deserializes them cleanly.
+- The `_write_pipelines_yaml` helper was consolidated into `AgentRegistry.save_pipelines()`,
+  matching the pattern established for agents.
+- `TemplateFormModal` uses a parallel `stepKeys` array of `crypto.randomUUID()` values as stable
+  React keys for the step list, avoiding index-key reconciliation bugs on reorder/remove.
+- `useTemplates` hook extracted into its own file (`frontend/src/hooks/useTemplates.ts`) with
+  both `useTemplates` and `useTemplateMutations`.
 
 ## Decision Log
 
@@ -44,7 +52,13 @@ _(fill in as work proceeds)_
 
 ## Outcomes & Retrospective
 
-_(fill in at completion)_
+All milestones complete. 200/200 backend tests pass. Frontend type-check clean.
+
+- `GET/POST/PUT/DELETE /registry/pipelines` fully implemented and tested.
+- `/templates` page live with create/edit/delete UI including step editor (add/remove/reorder
+  agent and approval steps).
+- `AgentRegistry.save_pipelines()` encapsulates file write + reload.
+- Total new backend tests: 9 in `TestPipelineWriteEndpoints`.
 
 ## Context and Orientation
 

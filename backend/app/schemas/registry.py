@@ -110,6 +110,47 @@ class PipelineTemplateResponse(_ResponseBase):
     steps: list[PipelineStepResponse]
 
 
+class AgentWriteRequest(_RegistryBase):
+    """Request body for POST /registry/agents and PUT /registry/agents/{name}."""
+
+    name: str
+    description: str
+    opencode_agent: str
+    default_model: str | None = None
+    system_prompt_additions: str = ""
+
+
+class AgentStepWrite(_RegistryBase):
+    """A write-side agent step — includes optional model override.
+
+    Structurally identical to AgentStep by design: the separate class gives this type
+    a distinct name in the OpenAPI schema, which keeps the generated client types clean.
+    """
+
+    type: Literal["agent"] = "agent"
+    agent: str
+    description: str = ""
+    model: str | None = None
+
+
+class ApprovalStepWrite(_RegistryBase):
+    """A write-side approval step."""
+
+    type: Literal["approval"]
+    description: str = ""
+
+
+PipelineStepWrite = Annotated[AgentStepWrite | ApprovalStepWrite, Field(discriminator="type")]
+
+
+class PipelineWriteRequest(_RegistryBase):
+    """Request body for POST /registry/pipelines and PUT /registry/pipelines/{name}."""
+
+    name: str
+    description: str
+    steps: list[PipelineStepWrite]
+
+
 class GitHubIssueResponse(BaseModel):
     number: int
     title: str

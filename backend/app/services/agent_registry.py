@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import structlog
@@ -10,6 +11,13 @@ from watchfiles import awatch
 from app.schemas.registry import AgentProfile, PipelineTemplate, RegistryConfig
 
 logger = structlog.get_logger(__name__)
+
+
+def _write_yaml(path: Path, key: str, items: list) -> None:
+    """Atomically write a list of items under the given key to a YAML file."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(yaml.dump({key: items}, default_flow_style=False))
+    os.replace(tmp, path)
 
 
 class AgentRegistry:
@@ -86,6 +94,20 @@ class AgentRegistry:
 
     def get_pipeline(self, name: str) -> PipelineTemplate | None:
         return next((p for p in self.pipelines() if p.name == name), None)
+
+    def save_agents(self, agents: list[AgentProfile]) -> None:
+        """Atomically write the agents list to the YAML file and reload."""
+        if self._agents_path is None:
+            raise RuntimeError("Registry has no agents file path (ephemeral instance)")
+        _write_yaml(self._agents_path, "agents", [a.model_dump() for a in agents])
+        self.reload()
+
+    def save_pipelines(self, pipelines: list[PipelineTemplate]) -> None:
+        """Atomically write the pipelines list to the YAML file and reload."""
+        if self._pipelines_path is None:
+            raise RuntimeError("Registry has no pipelines file path (ephemeral instance)")
+        _write_yaml(self._pipelines_path, "pipelines", [p.model_dump() for p in pipelines])
+        self.reload()
 
     def merge_with_local(self, working_dir: str) -> "AgentRegistry":
         """Return a new ephemeral AgentRegistry with local agents merged in.

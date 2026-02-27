@@ -100,6 +100,36 @@ export interface AgentProfileResponse {
   default_model: string | null
 }
 
+/** Request body for POST /registry/agents and PUT /registry/agents/{name}. */
+export interface AgentWriteRequest {
+  name: string
+  description: string
+  opencode_agent: string
+  default_model: string | null
+  system_prompt_additions: string
+}
+
+/** Request body for POST /registry/pipelines and PUT /registry/pipelines/{name}. */
+export interface AgentStepWrite {
+  type: 'agent'
+  agent: string
+  description: string
+  model: string | null
+}
+
+export interface ApprovalStepWrite {
+  type: 'approval'
+  description: string
+}
+
+export type PipelineStepWrite = AgentStepWrite | ApprovalStepWrite
+
+export interface PipelineWriteRequest {
+  name: string
+  description: string
+  steps: PipelineStepWrite[]
+}
+
 /** Returned by GET /registry/github-issue (Issue #13). */
 export interface GitHubIssueResponse {
   number: number

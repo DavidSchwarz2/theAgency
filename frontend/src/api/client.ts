@@ -5,6 +5,7 @@
 
 import type {
   AgentProfileResponse,
+  AgentWriteRequest,
   AuditEvent,
   AuditQueryParams,
   FsBrowseResponse,
@@ -15,6 +16,7 @@ import type {
   PipelineCreateRequest,
   PipelineDetail,
   PipelineTemplateResponse,
+  PipelineWriteRequest,
 } from '@/types/api'
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
@@ -29,6 +31,10 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   if (!response.ok) {
     const text = await response.text()
     throw new Error(`HTTP ${response.status}: ${text}`)
+  }
+  // 204 No Content responses have no body — skip JSON parsing.
+  if (response.status === 204 || response.headers.get('content-length') === '0') {
+    return undefined as T
   }
   return response.json() as Promise<T>
 }
@@ -80,6 +86,42 @@ export function fetchPipelineTemplates(): Promise<PipelineTemplateResponse[]> {
 
 export function fetchAgents(): Promise<AgentProfileResponse[]> {
   return apiFetch<AgentProfileResponse[]>('/registry/agents')
+}
+
+export function createAgent(req: AgentWriteRequest): Promise<AgentProfileResponse> {
+  return apiFetch<AgentProfileResponse>('/registry/agents', {
+    method: 'POST',
+    body: JSON.stringify(req),
+  })
+}
+
+export function updateAgent(name: string, req: AgentWriteRequest): Promise<AgentProfileResponse> {
+  return apiFetch<AgentProfileResponse>(`/registry/agents/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    body: JSON.stringify(req),
+  })
+}
+
+export function deleteAgent(name: string): Promise<void> {
+  return apiFetch<void>(`/registry/agents/${encodeURIComponent(name)}`, { method: 'DELETE' })
+}
+
+export function createTemplate(req: PipelineWriteRequest): Promise<PipelineTemplateResponse> {
+  return apiFetch<PipelineTemplateResponse>('/registry/pipelines', {
+    method: 'POST',
+    body: JSON.stringify(req),
+  })
+}
+
+export function updateTemplate(name: string, req: PipelineWriteRequest): Promise<PipelineTemplateResponse> {
+  return apiFetch<PipelineTemplateResponse>(`/registry/pipelines/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    body: JSON.stringify(req),
+  })
+}
+
+export function deleteTemplate(name: string): Promise<void> {
+  return apiFetch<void>(`/registry/pipelines/${encodeURIComponent(name)}`, { method: 'DELETE' })
 }
 
 export function fetchGitHubIssue(repo: string, number: number): Promise<GitHubIssueResponse> {

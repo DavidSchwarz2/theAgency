@@ -1,31 +1,29 @@
-import { useEffect, useState } from 'react'
-
-export type Agent = {
-  name: string
-  description: string
-  opencode_agent: string
-}
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { createAgent, deleteAgent, fetchAgents, updateAgent } from '@/api/client'
+import type { AgentWriteRequest } from '@/types/api'
 
 export function useAgents() {
-  const [agents, setAgents] = useState<Agent[]>([])
-  const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
+  return useQuery({ queryKey: ['agents'], queryFn: fetchAgents })
+}
 
-  useEffect(() => {
-    fetch('/api/registry/agents')
-      .then((res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        return res.json() as Promise<Agent[]>
-      })
-      .then((data) => {
-        setAgents(data)
-        setError(null)
-      })
-      .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : 'Failed to load agents')
-      })
-      .finally(() => setLoading(false))
-  }, [])
+export function useAgentMutations() {
+  const queryClient = useQueryClient()
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['agents'] })
 
-  return { agents, error, loading }
+  const create = useMutation({
+    mutationFn: (req: AgentWriteRequest) => createAgent(req),
+    onSuccess: invalidate,
+  })
+
+  const update = useMutation({
+    mutationFn: ({ name, req }: { name: string; req: AgentWriteRequest }) => updateAgent(name, req),
+    onSuccess: invalidate,
+  })
+
+  const remove = useMutation({
+    mutationFn: (name: string) => deleteAgent(name),
+    onSuccess: invalidate,
+  })
+
+  return { create, update, remove }
 }

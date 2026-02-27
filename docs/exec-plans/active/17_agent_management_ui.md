@@ -13,13 +13,24 @@ hot-reloaded by the running server — no server restart needed.
 
 ## Progress
 
-- [ ] M1: Backend write endpoints (POST/PUT/DELETE for agents) — TDD, all tests green
-- [ ] M2: Frontend Agents page with create/edit/delete modals + NavBar link
-- [ ] ExecPlan finalized: outcomes written, plan moved to completed location per AGENTS.md.
+- [x] M1: Backend write endpoints (POST/PUT/DELETE for agents) — TDD, all tests green
+- [x] M2: Frontend Agents page with create/edit/delete modals + NavBar link
+- [x] Code quality review — all MUST FIX and SHOULD FIX items resolved
+- [x] ExecPlan finalized: outcomes written, plan moved to completed location per AGENTS.md.
 
 ## Surprises & Discoveries
 
-_(fill in as work proceeds)_
+- `RegistryConfig._steps_reference_known_agents` runs on every `model_validate` call — must pass
+  the full agents + pipelines to validate before writing agents (not just the new agents list).
+- The `reviewer` agent IS referenced in the default test fixture pipeline — easy to get this wrong
+  when writing delete tests; used a separate `make_registry` call with a `freelancer` agent.
+- `reload()` is blocking I/O but calling it directly from the router (sync call within async handler)
+  is safe here because it's fast and the router runs on the same thread pool; no `asyncio.to_thread`
+  needed in the write path.
+- Moved `_write_yaml` to a module-level function on `AgentRegistry` service (as `save_agents` /
+  `save_pipelines`) to avoid router accessing private `_agents_path`/`_pipelines_path` attributes.
+- The `AgentStepWrite` / `AgentStep` classes are structurally identical by design; a comment was
+  added to explain the intentional separation (distinct OpenAPI schema names).
 
 ## Decision Log
 
@@ -41,7 +52,15 @@ _(fill in as work proceeds)_
 
 ## Outcomes & Retrospective
 
-_(fill in at completion)_
+All milestones complete. 200/200 backend tests pass. Frontend type-check clean.
+
+- `GET/POST/PUT/DELETE /registry/agents` fully implemented and tested.
+- `/agents` page live with create/edit/delete UI.
+- `AgentRegistry.save_agents()` encapsulates file write + reload; router no longer accesses
+  private attributes.
+- All code-quality SHOULD FIX items resolved: DRY yaml helper, referential integrity consistency,
+  test fixture cleanup, frontend modal key/state correctness.
+- Total new backend tests: 8 in `TestAgentWriteEndpoints`.
 
 ## Context and Orientation
 

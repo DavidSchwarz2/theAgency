@@ -5,6 +5,8 @@ import NavBar from '@/components/NavBar'
 import OpenCodeStatus from '@/components/OpenCodeStatus'
 import PipelineList from '@/pages/PipelineList'
 import AuditTrail from '@/pages/AuditTrail'
+import AgentsPage from '@/pages/AgentsPage'
+import TemplatesPage from '@/pages/TemplatesPage'
 
 function App() {
   const [connected, setConnected] = useState(false)
@@ -45,6 +47,8 @@ function App() {
       <main className="flex-1 p-6">
         <Routes>
           <Route path="/" element={<PipelineList />} />
+          <Route path="/agents" element={<AgentsPage />} />
+          <Route path="/templates" element={<TemplatesPage />} />
           <Route path="/audit" element={<AuditTrail />} />
         </Routes>
       </main>

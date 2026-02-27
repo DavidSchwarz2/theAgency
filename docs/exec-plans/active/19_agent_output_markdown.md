@@ -16,13 +16,18 @@ Markdown too when expanded.
 
 ## Progress
 
-- [ ] M1: Install `react-markdown`, render `content_md` as Markdown in `StepRow`, fix `skipped`
+- [x] M1: Install `react-markdown`, render `content_md` as Markdown in `StepRow`, fix `skipped`
        status in `STEP_STATUS_CLASSES`, auto-expand the running step
-- [ ] ExecPlan finalized: outcomes written, plan moved to completed location per AGENTS.md.
+- [x] ExecPlan finalized: outcomes written, plan moved to completed location per AGENTS.md.
 
 ## Surprises & Discoveries
 
-_(fill in as work proceeds)_
+- Tailwind v4 uses `@import "tailwindcss"` and `@plugin` directives in CSS (no `tailwind.config.js`).
+  The typography plugin was added via `@plugin "@tailwindcss/typography"` in `index.css`.
+- `react-markdown` v10.1.0 ships its own TypeScript types — no `@types` package needed.
+- `apiFetch` in `client.ts` was calling `response.json()` unconditionally; 204 No Content responses
+  have no body and would throw a JSON parse error at runtime. Fixed with a status check guard
+  (`if (response.status === 204) return undefined as T`).
 
 ## Decision Log
 
@@ -45,7 +50,12 @@ _(fill in as work proceeds)_
 
 ## Outcomes & Retrospective
 
-_(fill in at completion)_
+All milestones complete. Frontend type-check clean.
+
+- `react-markdown` + `@tailwindcss/typography` installed and wired in.
+- Running steps auto-expand; handoff content rendered as Markdown with `prose prose-invert`.
+- `skipped` status gap in `STEP_STATUS_CLASSES` fixed.
+- `apiFetch` 204 guard added (pre-existing bug found during code review).
 
 ## Context and Orientation
 

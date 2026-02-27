@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import ReactMarkdown from 'react-markdown'
 import type { Pipeline, PipelineStatus, Step, StepStatus } from '@/types/api'
 import { useApprovalMutation } from '@/hooks/useApprovalMutation'
 
@@ -19,6 +20,7 @@ const STEP_STATUS_CLASSES: Record<StepStatus, string> = {
   running: 'bg-blue-600 text-blue-100 animate-pulse',
   done: 'bg-green-700 text-green-200',
   failed: 'bg-red-700 text-red-200',
+  skipped: 'bg-gray-700 text-gray-500',
 }
 
 function StatusBadge({ status }: { status: PipelineStatus }) {
@@ -34,7 +36,7 @@ function StatusBadge({ status }: { status: PipelineStatus }) {
 // ---------------------------------------------------------------------------
 
 function StepRow({ step }: { step: Step }) {
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState(step.status === 'running')
   const handoff = step.latest_handoff
 
   return (
@@ -67,7 +69,9 @@ function StepRow({ step }: { step: Step }) {
               ))}
             </dl>
           ) : (
-            <pre className="text-gray-300 whitespace-pre-wrap break-words">{handoff.content_md}</pre>
+            <div className="prose prose-invert prose-xs max-w-none text-gray-300">
+              <ReactMarkdown>{handoff.content_md}</ReactMarkdown>
+            </div>
           )}
         </div>
       )}
