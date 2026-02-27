@@ -7,10 +7,14 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.adapters.opencode_client import OpenCodeClient
 from app.config.config import settings
+from app.database import AsyncSessionLocal
 from app.routers import events, health
+from app.routers import pipelines as pipelines_router
 from app.routers import registry as registry_router
 from app.services.agent_registry import AgentRegistry, watch_and_reload
+from app.services.pipeline_runner import recover_interrupted_pipelines
 
 structlog.configure(
     processors=[
@@ -43,6 +47,14 @@ async def lifespan(app: FastAPI):
     )
     app.state.registry = agent_registry
 
+    # Initialize OpenCode client and pipeline task tracking
+    opencode_client = OpenCodeClient(base_url=settings.opencode_base_url)
+    app.state.opencode_client = opencode_client
+    app.state.pipeline_tasks = set()
+    app.state.active_runners = {}
+    app.state.step_timeout = float(settings.step_timeout_seconds)
+    app.state.db_session_factory = AsyncSessionLocal
+
     # Start file watcher for hot-reload
     stop_event = asyncio.Event()
     watcher_task = asyncio.create_task(
@@ -53,13 +65,30 @@ async def lifespan(app: FastAPI):
         )
     )
 
+    # Recover any pipelines that were interrupted by a previous crash
+    await recover_interrupted_pipelines(
+        db_session_factory=AsyncSessionLocal,
+        client=opencode_client,
+        registry=agent_registry,
+        task_set=app.state.pipeline_tasks,
+        step_timeout=app.state.step_timeout,
+    )
+
     yield
+
+    # Shutdown: cancel pending pipeline tasks
+    for task in list(app.state.pipeline_tasks):
+        task.cancel()
+    if app.state.pipeline_tasks:
+        await asyncio.gather(*app.state.pipeline_tasks, return_exceptions=True)
 
     # Shutdown: stop file watcher
     stop_event.set()
     watcher_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await watcher_task
+
+    await opencode_client.close()
     logger.info("shutdown")
 
 
@@ -81,3 +110,4 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(events.router)
 app.include_router(registry_router.router)
+app.include_router(pipelines_router.router)

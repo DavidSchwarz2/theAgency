@@ -44,7 +44,11 @@ class Pipeline(Base):
         DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    steps: Mapped[list["Step"]] = relationship("Step", back_populates="pipeline", cascade="all, delete-orphan")
+    prompt: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+
+    steps: Mapped[list["Step"]] = relationship(
+        "Step", back_populates="pipeline", cascade="all, delete-orphan", order_by="Step.order_index"
+    )
     audit_events: Mapped[list["AuditEvent"]] = relationship(
         "AuditEvent", back_populates="pipeline", cascade="all, delete-orphan"
     )
