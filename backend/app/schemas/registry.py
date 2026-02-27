@@ -29,6 +29,7 @@ class ApprovalStep(_RegistryBase):
 
     type: Literal["approval"]
     description: str = ""
+    remind_after_hours: float | None = Field(default=None, gt=0)
 
 
 # Discriminated union — the `type` field routes parsing.
@@ -77,6 +78,7 @@ class RegistryConfig(_RegistryBase):
 # When adding fields to the domain models above, decide explicitly whether they belong
 # in the API response. Fields intentionally excluded:
 #   AgentProfileResponse: system_prompt_additions (internal prompt detail)
+#   ApprovalStepResponse: remind_after_hours is included so the UI can display the timeout config.
 
 
 class _ResponseBase(BaseModel):
@@ -99,6 +101,7 @@ class AgentStepResponse(_ResponseBase):
 class ApprovalStepResponse(_ResponseBase):
     type: Literal["approval"]
     description: str
+    remind_after_hours: float | None = None
 
 
 PipelineStepResponse = Annotated[AgentStepResponse | ApprovalStepResponse, Field(discriminator="type")]
@@ -138,6 +141,7 @@ class ApprovalStepWrite(_RegistryBase):
 
     type: Literal["approval"]
     description: str = ""
+    remind_after_hours: float | None = Field(default=None, gt=0)
 
 
 PipelineStepWrite = Annotated[AgentStepWrite | ApprovalStepWrite, Field(discriminator="type")]

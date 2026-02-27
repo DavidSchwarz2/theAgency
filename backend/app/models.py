@@ -108,5 +108,6 @@ class Approval(Base):
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     decided_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
 
     step: Mapped["Step"] = relationship("Step", back_populates="approvals")

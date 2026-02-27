@@ -138,6 +138,16 @@ export interface GitHubIssueResponse {
   labels: string[]
 }
 
+/** Request body for POST /pipelines/{id}/approve and POST /pipelines/{id}/reject. */
+export interface ApprovalActionRequest {
+  comment?: string
+}
+
+/** @deprecated Use ApprovalActionRequest directly. */
+export type ApproveRequest = ApprovalActionRequest
+/** @deprecated Use ApprovalActionRequest directly. */
+export type RejectRequest = ApprovalActionRequest
+
 /** Returned by GET /health/opencode. */
 export interface OpenCodeStatusResponse {
   available: boolean

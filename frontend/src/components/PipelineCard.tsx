@@ -85,24 +85,47 @@ function StepRow({ step }: { step: Step }) {
 
 function ApprovalBanner({ pipelineId }: { pipelineId: number }) {
   const { approve, reject } = useApprovalMutation(pipelineId)
+  const [comment, setComment] = useState('')
   const isPending = approve.isPending || reject.isPending
-  const error = approve.error ?? reject.error
+  // Show only the error from the mutation that is currently (or was last) active.
+  const error = approve.isPending || approve.isError ? approve.error : reject.error
+
+  function handleApprove() {
+    approve.mutate(comment, { onSuccess: () => setComment('') })
+  }
+
+  function handleReject() {
+    reject.mutate(comment, { onSuccess: () => setComment('') })
+  }
 
   return (
     <div className="mt-3 p-3 rounded bg-yellow-950 border border-yellow-700">
       <p className="text-yellow-300 text-xs font-semibold mb-2">Waiting for approval</p>
+      <label className="block mb-2">
+        <span className="text-yellow-400 text-xs">Optional comment</span>
+        <textarea
+          className="mt-1 block w-full rounded bg-yellow-900 border border-yellow-700 text-yellow-100 text-xs px-2 py-1 resize-none placeholder-yellow-700 focus:outline-none focus:border-yellow-500"
+          rows={2}
+          placeholder="Leave a note for the next agent step…"
+          value={comment}
+          disabled={isPending}
+          onChange={(e) => setComment(e.target.value)}
+        />
+      </label>
       <div className="flex gap-2">
         <button
           className="px-3 py-1 rounded bg-green-700 hover:bg-green-600 text-white text-xs disabled:opacity-50"
           disabled={isPending}
-          onClick={() => approve.mutate('')}
+          aria-label="Approve pipeline"
+          onClick={handleApprove}
         >
           Approve
         </button>
         <button
           className="px-3 py-1 rounded bg-red-700 hover:bg-red-600 text-white text-xs disabled:opacity-50"
           disabled={isPending}
-          onClick={() => reject.mutate('')}
+          aria-label="Reject pipeline"
+          onClick={handleReject}
         >
           Reject
         </button>

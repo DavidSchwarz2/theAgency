@@ -13,7 +13,7 @@ from app.adapters.opencode_client import OpenCodeClient, OpenCodeClientError
 from app.adapters.opencode_models import MessageResponse
 from app.models import Approval, ApprovalStatus, AuditEvent, Handoff, Pipeline, PipelineStatus, Step, StepStatus
 from app.schemas.handoff import HandoffSchema
-from app.schemas.registry import AgentProfile, PipelineTemplate
+from app.schemas.registry import AgentProfile, ApprovalStep, PipelineStep, PipelineTemplate
 from app.services.agent_registry import AgentRegistry
 from app.services.handoff_extractor import HandoffExtractor
 
@@ -192,12 +192,22 @@ class PipelineRunner:
         pipeline.updated_at = datetime.now(UTC)
         await self._db.commit()
 
-    async def _execute_approval_step(self, step: Step, pipeline: Pipeline, current_prompt: str) -> str | None:
+    async def _execute_approval_step(
+        self,
+        step: Step,
+        pipeline: Pipeline,
+        current_prompt: str,
+        remind_after_hours: float | None = None,
+    ) -> str | None:
         """Handle an approval gate step.
 
         Creates an Approval record, sets the pipeline to waiting_for_approval, and
         awaits the approval_event for this pipeline. Returns the updated prompt on
         approval (with optional comment appended), or None on rejection.
+
+        If remind_after_hours is set, a one-shot reminder fires after that many hours:
+        an approval_reminder AuditEvent is written and a warning is logged, then the
+        runner continues to wait indefinitely. The pipeline is never auto-rejected.
 
         Callers must check the return value: None means the pipeline should be aborted.
         """
@@ -227,13 +237,38 @@ class PipelineRunner:
         # Retrieve or create an event for this pipeline.
         event = self._approval_events.get(pipeline.id)
         if event is None:
-            # No event registered — this shouldn't happen in production but is safe
-            # for tests that don't pass an event. Create one that will never fire and
-            # let the caller handle the timeout.
+            # No event registered — this is a programmer error (the caller should always
+            # register an event before running a pipeline). Log a warning and create a
+            # fallback event so the pipeline doesn't crash; it will wait indefinitely.
+            logger.warning("approval_event_missing", pipeline_id=pipeline.id, step_id=step.id)
             event = asyncio.Event()
             self._approval_events[pipeline.id] = event
 
-        await event.wait()
+        if remind_after_hours is not None:
+            timeout_secs = remind_after_hours * 3600
+            try:
+                # shield() prevents wait_for from cancelling the inner coroutine when
+                # the timeout fires — the event remains valid for the second wait below.
+                await asyncio.wait_for(asyncio.shield(event.wait()), timeout=timeout_secs)
+            except TimeoutError:
+                logger.warning(
+                    "approval_reminder_fired",
+                    pipeline_id=pipeline.id,
+                    step_id=step.id,
+                    remind_after_hours=remind_after_hours,
+                )
+                audit_reminder = AuditEvent(
+                    pipeline_id=pipeline.id,
+                    step_id=step.id,
+                    event_type="approval_reminder",
+                    payload_json=json.dumps({"remind_after_hours": remind_after_hours}),
+                )
+                self._db.add(audit_reminder)
+                await self._db.commit()
+                # Continue waiting indefinitely after the reminder.
+                await event.wait()
+        else:
+            await event.wait()
 
         # Re-read the approval from the DB to get the decision.
         await self._db.refresh(approval)
@@ -283,21 +318,46 @@ class PipelineRunner:
             await self._mark_pipeline_failed(pipeline, step)
             return None
 
-    async def _execute_steps(self, steps: list[Step], initial_prompt: str, pipeline: Pipeline) -> None:
+    async def _execute_steps(
+        self,
+        steps: list[Step],
+        initial_prompt: str,
+        pipeline: Pipeline,
+        template_steps: list[PipelineStep] | None = None,
+    ) -> None:
         """Execute a list of steps sequentially, chaining output as the next prompt.
 
         Updates `pipeline.status` to `failed` and returns early on any error.
         Sets `pipeline.status` to `done` if all steps complete successfully.
+
+        template_steps, if provided, is a list of PipelineStep schema objects (AgentStep
+        or ApprovalStep) in the same order as `steps`. When present, the runner uses the
+        template step's configuration (e.g. remind_after_hours for approval gates).
         """
         if self._registry is None:
             raise ValueError("_execute_steps requires a registry")
 
         current_prompt = initial_prompt
 
-        for step in steps:
+        for i, step in enumerate(steps):
             # Approval gate step — pause and wait for a human decision.
             if step.agent_name == APPROVAL_SENTINEL:
-                result_prompt = await self._execute_approval_step(step, pipeline, current_prompt)
+                remind_after_hours: float | None = None
+                if template_steps is not None:
+                    if i < len(template_steps):
+                        tpl_step = template_steps[i]
+                        if isinstance(tpl_step, ApprovalStep):
+                            remind_after_hours = tpl_step.remind_after_hours
+                    else:
+                        logger.warning(
+                            "approval_step_template_mismatch",
+                            step_index=i,
+                            template_steps_count=len(template_steps),
+                            step_id=step.id,
+                        )
+                result_prompt = await self._execute_approval_step(
+                    step, pipeline, current_prompt, remind_after_hours=remind_after_hours
+                )
                 if result_prompt is None:
                     # Rejected — pipeline already marked failed in _execute_approval_step.
                     return
@@ -365,7 +425,7 @@ class PipelineRunner:
         loaded_pipeline = result.scalar_one()
         steps = sorted(loaded_pipeline.steps, key=lambda s: s.order_index)
 
-        await self._execute_steps(steps, loaded_pipeline.prompt, pipeline)
+        await self._execute_steps(steps, loaded_pipeline.prompt, pipeline, template_steps=template.steps)
 
     # ------------------------------------------------------------------
     # Crash recovery (Milestone 3)

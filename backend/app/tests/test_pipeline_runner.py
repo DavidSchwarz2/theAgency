@@ -1228,3 +1228,171 @@ class TestWorkingDirPreamble:
 
         prompt_sent = mock_client.send_message.call_args.kwargs["prompt"]
         assert "Working directory: /srv/workspace" in prompt_sent
+
+
+# Tiny timeout value for tests: 0.000001 hours = 3.6ms — fires almost immediately
+# in a test event loop without relying on wall-clock sleep.
+_INSTANT_REMINDER_HOURS = 0.000001
+
+
+# ---------------------------------------------------------------------------
+# Issue #4 — remind_after_hours: timeout reminder on approval steps
+# ---------------------------------------------------------------------------
+
+
+class TestApprovalStepReminder:
+    async def test_reminder_audit_event_written_on_timeout(
+        self, mock_client, mock_registry, approval_pipeline, db_engine_for_approval
+    ):
+        """When remind_after_hours is set and the timeout fires, an approval_reminder
+        audit event is written and the pipeline remains waiting_for_approval."""
+        from sqlalchemy import select as sa_select
+
+        from app.models import Approval, ApprovalStatus, AuditEvent
+        from app.schemas.registry import AgentStep, ApprovalStep, PipelineTemplate
+        from app.services.pipeline_runner import PipelineRunner
+
+        pipeline_id, _, step_approval_id, _ = approval_pipeline
+        approval_event: asyncio.Event = asyncio.Event()
+
+        async def _runner_task() -> None:
+            async with AsyncSession(db_engine_for_approval, expire_on_commit=False) as runner_session:
+                result = await runner_session.execute(sa_select(Pipeline).where(Pipeline.id == pipeline_id))
+                pipeline = result.scalar_one()
+                runner = PipelineRunner(
+                    client=mock_client,
+                    db=runner_session,
+                    step_timeout=30,
+                    registry=mock_registry,
+                    approval_events={pipeline_id: approval_event},
+                )
+                await runner.run_pipeline(
+                    pipeline,
+                    PipelineTemplate(
+                        name="approval_flow",
+                        description="d",
+                        steps=[
+                            AgentStep(agent="developer", description="s1"),
+                            ApprovalStep(
+                                type="approval", description="gate", remind_after_hours=_INSTANT_REMINDER_HOURS
+                            ),
+                            AgentStep(agent="reviewer", description="s3"),
+                        ],
+                    ),
+                )
+
+        async def _approve_after_reminder_task() -> None:
+            async with AsyncSession(db_engine_for_approval, expire_on_commit=False) as helper_session:
+                # Wait until the approval record exists (runner is at the gate).
+                approval = None
+                for _ in range(100):
+                    await asyncio.sleep(0.01)
+                    result = await helper_session.execute(
+                        sa_select(Approval).where(Approval.step_id == step_approval_id)
+                    )
+                    approval = result.scalar_one_or_none()
+                    if approval is not None:
+                        break
+                assert approval is not None, "Approval record was not created in time"
+
+                # Poll for the reminder audit event rather than using a fixed sleep
+                # to avoid a time-dependent assertion.
+                reminder_event = None
+                for _ in range(100):
+                    await asyncio.sleep(0.01)
+                    result = await helper_session.execute(
+                        sa_select(AuditEvent).where(
+                            AuditEvent.pipeline_id == pipeline_id,
+                            AuditEvent.event_type == "approval_reminder",
+                        )
+                    )
+                    reminder_event = result.scalar_one_or_none()
+                    if reminder_event is not None:
+                        break
+                assert reminder_event is not None, "approval_reminder audit event was not written"
+
+                # Verify pipeline is still waiting for approval.
+                result = await helper_session.execute(sa_select(Pipeline).where(Pipeline.id == pipeline_id))
+                pipeline = result.scalar_one()
+                assert pipeline.status == PipelineStatus.waiting_for_approval
+
+                # Now approve to let the runner complete.
+                approval.status = ApprovalStatus.approved
+                approval.decided_at = datetime.now(UTC)
+                await helper_session.commit()
+            approval_event.set()
+
+        runner_task = asyncio.create_task(_runner_task())
+        await asyncio.wait_for(_approve_after_reminder_task(), timeout=10.0)
+        await asyncio.wait_for(runner_task, timeout=10.0)
+
+        async with AsyncSession(db_engine_for_approval, expire_on_commit=False) as check_session:
+            result = await check_session.execute(sa_select(Pipeline).where(Pipeline.id == pipeline_id))
+            assert result.scalar_one().status == PipelineStatus.done
+
+    async def test_no_reminder_without_remind_after_hours(
+        self, mock_client, mock_registry, approval_pipeline, db_engine_for_approval
+    ):
+        """When remind_after_hours is not set, no approval_reminder event is written
+        even after the approval is processed."""
+        from sqlalchemy import select as sa_select
+
+        from app.models import Approval, ApprovalStatus, AuditEvent
+        from app.schemas.registry import AgentStep, ApprovalStep, PipelineTemplate
+        from app.services.pipeline_runner import PipelineRunner
+
+        pipeline_id, _, step_approval_id, _ = approval_pipeline
+        approval_event: asyncio.Event = asyncio.Event()
+
+        async def _runner_task() -> None:
+            async with AsyncSession(db_engine_for_approval, expire_on_commit=False) as runner_session:
+                result = await runner_session.execute(sa_select(Pipeline).where(Pipeline.id == pipeline_id))
+                pipeline = result.scalar_one()
+                runner = PipelineRunner(
+                    client=mock_client,
+                    db=runner_session,
+                    step_timeout=30,
+                    registry=mock_registry,
+                    approval_events={pipeline_id: approval_event},
+                )
+                await runner.run_pipeline(
+                    pipeline,
+                    PipelineTemplate(
+                        name="approval_flow",
+                        description="d",
+                        steps=[
+                            AgentStep(agent="developer", description="s1"),
+                            ApprovalStep(type="approval", description="gate"),  # no remind_after_hours
+                            AgentStep(agent="reviewer", description="s3"),
+                        ],
+                    ),
+                )
+
+        async def _approve_task() -> None:
+            async with AsyncSession(db_engine_for_approval, expire_on_commit=False) as helper_session:
+                for _ in range(100):
+                    await asyncio.sleep(0.01)
+                    result = await helper_session.execute(
+                        sa_select(Approval).where(Approval.step_id == step_approval_id)
+                    )
+                    if result.scalar_one_or_none() is not None:
+                        break
+                result = await helper_session.execute(sa_select(Approval).where(Approval.step_id == step_approval_id))
+                approval = result.scalar_one()
+                approval.status = ApprovalStatus.approved
+                approval.decided_at = datetime.now(UTC)
+                await helper_session.commit()
+            approval_event.set()
+
+        runner_task = asyncio.create_task(_runner_task())
+        await asyncio.wait_for(_approve_task(), timeout=5.0)
+        await asyncio.wait_for(runner_task, timeout=5.0)
+
+        async with AsyncSession(db_engine_for_approval, expire_on_commit=False) as check_session:
+            result = await check_session.execute(
+                sa_select(AuditEvent).where(
+                    AuditEvent.pipeline_id == pipeline_id,
+                    AuditEvent.event_type == "approval_reminder",
+                )
+            )
+            assert result.scalar_one_or_none() is None, "Unexpected approval_reminder event"
