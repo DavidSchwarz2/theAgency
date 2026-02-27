@@ -484,3 +484,79 @@ class TestRejectPipeline:
 
         response = await client.post(f"/pipelines/{pipeline_id}/reject", json={})
         assert response.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# GET /pipelines — list all pipelines
+# ---------------------------------------------------------------------------
+
+
+class TestListPipelines:
+    async def test_list_pipelines_returns_all(self, test_client):
+        """GET /pipelines returns 200 with a list of all pipelines ordered by id desc."""
+        client, session_factory = test_client
+
+        async with session_factory() as session:
+            p1 = Pipeline(
+                title="Pipeline One",
+                template="quick_fix",
+                prompt="prompt1",
+                status=PipelineStatus.done,
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+            p2 = Pipeline(
+                title="Pipeline Two",
+                template="quick_fix",
+                prompt="prompt2",
+                status=PipelineStatus.running,
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+            session.add_all([p1, p2])
+            await session.commit()
+
+        response = await client.get("/pipelines")
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data, list)
+        assert len(data) == 2
+        # Endpoint orders by id descending: p2 was inserted after p1, so it should come first.
+        assert data[0]["title"] == "Pipeline Two"
+        assert data[1]["title"] == "Pipeline One"
+
+    async def test_list_pipelines_empty_returns_empty_list(self, test_client):
+        """GET /pipelines with no pipelines returns an empty list."""
+        client, _ = test_client
+
+        response = await client.get("/pipelines")
+        assert response.status_code == 200
+        assert response.json() == []
+
+    async def test_list_pipelines_response_shape(self, test_client):
+        """GET /pipelines items conform to PipelineResponse schema (id, title, template, status, timestamps)."""
+        from app.schemas.pipeline import PipelineResponse
+
+        client, session_factory = test_client
+
+        async with session_factory() as session:
+            pipeline = Pipeline(
+                title="Shape Test",
+                template="quick_fix",
+                prompt="prompt",
+                status=PipelineStatus.running,
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+            session.add(pipeline)
+            await session.commit()
+
+        response = await client.get("/pipelines")
+        assert response.status_code == 200
+        item = response.json()[0]
+        # Validate against the Pydantic schema to catch field mismatches automatically.
+        validated = PipelineResponse.model_validate(item)
+        assert validated.title == "Shape Test"
+        assert validated.status.value == "running"
+        # List endpoint must NOT include steps (PipelineResponse has no steps field).
+        assert "steps" not in item

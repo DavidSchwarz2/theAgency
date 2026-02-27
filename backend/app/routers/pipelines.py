@@ -39,6 +39,21 @@ def get_opencode_client(request: Request) -> OpenCodeClient:
 
 
 # ---------------------------------------------------------------------------
+# GET /pipelines — list all pipelines
+# ---------------------------------------------------------------------------
+
+
+@router.get("", response_model=list[PipelineResponse])
+async def list_pipelines(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> list[PipelineResponse]:
+    """Return all pipelines ordered by id descending (most recent first)."""
+    result = await db.execute(select(Pipeline).order_by(Pipeline.id.desc()))
+    pipelines = result.scalars().all()
+    return pipelines  # type: ignore[return-value]  # FastAPI serialises via response_model
+
+
+# ---------------------------------------------------------------------------
 # POST /pipelines — create and launch a new pipeline
 # ---------------------------------------------------------------------------
 
@@ -212,8 +227,8 @@ async def abort_pipeline(
         if session_id is not None:
             try:
                 await client.abort_session(session_id)
-            except Exception:
-                logger.warning("abort_session_failed", pipeline_id=pipeline_id, session_id=session_id)
+            except Exception as exc:
+                logger.warning("abort_session_failed", pipeline_id=pipeline_id, session_id=session_id, exc_info=exc)
 
     # Cancel only this pipeline's background task.
     task = app_state.pipeline_tasks.get(pipeline_id)

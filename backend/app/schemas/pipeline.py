@@ -55,14 +55,20 @@ class PipelineDetailResponse(PipelineResponse):
     steps: list[StepStatusResponse]
 
 
-class ApproveRequest(BaseModel):
+class ApprovalDecisionRequest(BaseModel):
+    """Shared body for approve and reject endpoints."""
+
     comment: str | None = None
     decided_by: str | None = None
 
 
-class RejectRequest(BaseModel):
-    comment: str | None = None
-    decided_by: str | None = None
+# Kept as distinct names so API docs and call sites remain explicit.
+class ApproveRequest(ApprovalDecisionRequest):
+    pass
+
+
+class RejectRequest(ApprovalDecisionRequest):
+    pass
 
 
 class ApprovalResponse(BaseModel):

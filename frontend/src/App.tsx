@@ -1,68 +1,51 @@
 import { useEffect, useRef, useState } from 'react'
-
-import { AgentList } from '@/components/AgentList'
-
-type HeartbeatEvent = { type: string; ts: number }
+import { Route, Routes } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
+import NavBar from '@/components/NavBar'
+import PipelineList from '@/pages/PipelineList'
+import AuditTrail from '@/pages/AuditTrail'
 
 function App() {
   const [connected, setConnected] = useState(false)
-  const [events, setEvents] = useState<HeartbeatEvent[]>([])
   const esRef = useRef<EventSource | null>(null)
+  const queryClient = useQueryClient()
 
   useEffect(() => {
     const es = new EventSource('/api/events')
     esRef.current = es
 
     es.onopen = () => setConnected(true)
-    es.onerror = () => setConnected(false)
-    es.onmessage = (e) => {
-      try {
-        const payload = JSON.parse(e.data) as HeartbeatEvent
-        setEvents((prev) => [payload, ...prev].slice(0, 20))
-      } catch {
-        // ignore malformed frames
-      }
+    es.onerror = () => {
+      // EventSource fires onerror on every reconnect attempt; only mark
+      // disconnected when the connection is permanently closed.
+      if (es.readyState === EventSource.CLOSED) setConnected(false)
+    }
+    es.onmessage = () => {
+      // Invalidate pipeline list on any SSE event so cards stay current.
+      void queryClient.invalidateQueries({ queryKey: ['pipelines'] })
     }
 
     return () => {
       es.close()
       setConnected(false)
     }
-  }, [])
+  }, [queryClient])
 
   return (
-    <div className="min-h-screen bg-gray-950 text-gray-100 font-mono p-8">
-      <header className="mb-8 flex items-center gap-4">
-        <h1 className="text-2xl font-bold tracking-tight">theAgency</h1>
+    <div className="min-h-screen bg-gray-950 text-gray-100 font-mono flex flex-col">
+      <NavBar />
+      <div className="flex items-center gap-2 px-6 py-1 text-xs border-b border-gray-900 bg-gray-950">
         <span
-          className={`px-2 py-0.5 rounded text-xs font-semibold ${
-            connected ? 'bg-green-800 text-green-200' : 'bg-red-900 text-red-300'
-          }`}
-        >
-          {connected ? 'connected' : 'disconnected'}
-        </span>
-      </header>
-
-      <section>
-        <h2 className="text-sm uppercase tracking-widest text-gray-500 mb-3">Backend Events</h2>
-        {events.length === 0 ? (
-          <p className="text-gray-600 text-sm">Waiting for events…</p>
-        ) : (
-          <ul className="space-y-1">
-            {events.map((ev, i) => (
-              <li key={i} className="text-xs text-gray-400">
-                <span className="text-gray-600 mr-2">{new Date(ev.ts * 1000).toLocaleTimeString()}</span>
-                {ev.type}
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section className="mt-8">
-        <h2 className="text-sm uppercase tracking-widest text-gray-500 mb-3">Agents</h2>
-        <AgentList />
-      </section>
+          className={`h-2 w-2 rounded-full ${connected ? 'bg-green-500' : 'bg-red-600'}`}
+        />
+        <span className="text-gray-500">{connected ? 'live' : 'reconnecting…'}</span>
+      </div>
+      <main className="flex-1 p-6">
+        <Routes>
+          <Route path="/" element={<PipelineList />} />
+          <Route path="/audit" element={<AuditTrail />} />
+        </Routes>
+      </main>
     </div>
   )
 }

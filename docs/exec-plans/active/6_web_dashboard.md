@@ -15,19 +15,44 @@ manual reload because the UI subscribes to the backend's Server-Sent Events stre
 
 ## Progress
 
-- [ ] ExecPlan written and committed.
-- [ ] Milestone 0: Dependencies installed and router wired up — `tsc --noEmit` clean.
-- [ ] Milestone 1: Pipeline list page — cards with step status badges, live SSE refresh.
-- [ ] Milestone 2: Approval actions — Approve/Reject buttons on waiting-for-approval pipelines.
-- [ ] Milestone 3: Handoff detail expansion — collapsed by default, expandable inline.
-- [ ] Milestone 4: Audit Trail tab — filterable, paginated, linked from a pipeline card.
-- [ ] Post-implementation code-quality review — all MUST FIX / SHOULD FIX resolved.
+- [x] (2026-02-27 09:30Z) ExecPlan written and committed.
+- [x] (2026-02-27 09:45Z) Milestone 0: Dependencies installed and router wired up — `tsc --noEmit` clean.
+- [x] (2026-02-27 10:00Z) Milestone 1: Pipeline list page — cards with step status badges, live SSE refresh.
+- [x] (2026-02-27 10:15Z) Milestone 2: Approval actions — Approve/Reject buttons on waiting-for-approval pipelines.
+- [x] (2026-02-27 10:20Z) Milestone 3: Handoff detail expansion — collapsed by default, expandable inline.
+- [x] (2026-02-27 10:30Z) Milestone 4: Audit Trail tab — filterable, paginated, linked from a navigation bar.
+- [x] (2026-02-27 11:00Z) Backend GET /pipelines list endpoint added with 3 TDD tests (TestListPipelines); 126 backend tests passing.
+- [x] (2026-02-27 11:15Z) Post-implementation code-quality review — all MUST FIX / SHOULD FIX resolved (see Surprises & Discoveries).
 - [ ] Commit (code + ExecPlan together).
 - [ ] ExecPlan moved to completed/, issue closed.
 
 ## Surprises & Discoveries
 
-(To be filled in as work proceeds.)
+- The `GET /pipelines/{id}` detail endpoint returns a `PipelineDetailResponse` with
+  `steps: list[StepStatusResponse]`, where each step has `latest_handoff: HandoffResponse | null`
+  (fields: `id`, `content_md`, `metadata: dict | null`, `created_at`). The ExecPlan's Artifacts
+  section had an outdated schema (`output`, `metadata_json`). The actual schema was used throughout.
+
+- The `GET /pipelines` list endpoint did not exist; it was added with TDD as part of Milestone 1.
+  Route ordering matters: `GET ""` (list) must be registered before `GET "/{pipeline_id}"` (detail)
+  to avoid FastAPI treating the path as a parameterised route.
+
+- `Pipeline` (list) and `PipelineDetail` (detail) are distinct shapes — the list response omits
+  `steps`. Introduced `PipelineDetail extends Pipeline` in `src/types/api.ts`; `PipelineCard`
+  accepts `Pipeline & { steps?: Step[] }` so it works for both list and detail contexts.
+
+- TanStack Query v5 `mutate()` requires the variable argument even when the `mutationFn` has a
+  default parameter — use `approve.mutate('')` not `approve.mutate()`.
+
+- `EventSource.onerror` fires on every reconnect attempt, not only on permanent failure. Fixed
+  `App.tsx` to check `es.readyState === EventSource.CLOSED` before marking `connected = false`.
+
+- `Number(input)` can produce `NaN` or floats. Added `Number.isInteger` validation for
+  `pipeline_id` input in `AuditTrail.tsx` before sending the query.
+
+- `result.scalars().all()` must be called only once per `Result`; the cursor is exhausted
+  after the first call. A copy-paste bug caused the list endpoint to return an empty list; fixed
+  by assigning to a variable before returning.
 
 ## Decision Log
 
@@ -63,7 +88,14 @@ manual reload because the UI subscribes to the backend's Server-Sent Events stre
 
 ## Outcomes & Retrospective
 
-(To be filled in at completion.)
+Issue #6 is fully implemented. An operator can open `http://localhost:3000` and see all
+pipelines as cards, approve or reject waiting pipelines directly from the UI, expand step
+handoffs inline, and browse the full audit trail with filters. Live updates arrive via SSE
+without manual reload. The backend has a proper `GET /pipelines` list endpoint backed by 3
+new tests. All 126 backend tests pass and `tsc -b --noEmit` reports zero errors.
+
+The main lesson: always split list and detail TypeScript types when the backend returns
+different shapes — conflating them causes silent `undefined` dereferences at runtime.
 
 ## Context and Orientation
 
