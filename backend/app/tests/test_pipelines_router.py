@@ -560,3 +560,109 @@ class TestListPipelines:
         assert validated.status.value == "running"
         # List endpoint must NOT include steps (PipelineResponse has no steps field).
         assert "steps" not in item
+
+
+# ---------------------------------------------------------------------------
+# Milestone 4 — step_models in PipelineCreateRequest
+# ---------------------------------------------------------------------------
+
+
+class TestCreatePipelineStepModels:
+    async def test_create_pipeline_stores_step_model(self, test_client):
+        """POST /pipelines with step_models stores the model on the Step ORM record."""
+        from sqlalchemy import select as sa_select
+
+        client, session_factory = test_client
+
+        with patch("app.routers.pipelines.PipelineRunner") as mock_runner_cls:
+            mock_runner = MagicMock()
+            mock_runner.run_pipeline = AsyncMock()
+            mock_runner_cls.return_value = mock_runner
+
+            response = await client.post(
+                "/pipelines",
+                json={
+                    "template": "quick_fix",
+                    "title": "Model Test",
+                    "prompt": "Do the thing",
+                    "step_models": {"0": "claude-sonnet"},
+                },
+            )
+
+        assert response.status_code == 201
+        pipeline_id = response.json()["id"]
+
+        async with session_factory() as session:
+            result = await session.execute(
+                sa_select(Step).where(Step.pipeline_id == pipeline_id).order_by(Step.order_index)
+            )
+            steps = result.scalars().all()
+
+        assert steps[0].model == "claude-sonnet"
+        assert steps[1].model is None  # step 1 not in step_models
+
+    async def test_create_pipeline_uses_agent_default_model_when_no_step_model(self, test_client):
+        """POST /pipelines without step_models falls back to agent's default_model."""
+        from sqlalchemy import select as sa_select
+
+        from app.tests.conftest import VALID_AGENTS, VALID_PIPELINES, write_yaml
+
+        client, session_factory = test_client
+
+        # Re-wire registry with an agent that has a default_model
+        agents_with_default = {
+            "agents": [
+                {
+                    "name": "developer",
+                    "description": "Implements features.",
+                    "opencode_agent": "developer",
+                    "default_model": "gpt-4o",
+                    "system_prompt_additions": "",
+                },
+                *VALID_AGENTS["agents"][1:],
+            ]
+        }
+        import tempfile
+        from pathlib import Path
+
+        from app.services.agent_registry import AgentRegistry
+
+        with tempfile.TemporaryDirectory() as tmp:
+            agents_path = Path(tmp) / "agents.yaml"
+            pipelines_path = Path(tmp) / "pipelines.yaml"
+            write_yaml(agents_path, agents_with_default)
+            write_yaml(pipelines_path, VALID_PIPELINES)
+            registry_with_default = AgentRegistry(agents_path=str(agents_path), pipelines_path=str(pipelines_path))
+
+        from app.routers.registry import get_registry
+
+        original_override = app.dependency_overrides.get(get_registry)
+        app.dependency_overrides[get_registry] = lambda: registry_with_default
+        try:
+            with patch("app.routers.pipelines.PipelineRunner") as mock_runner_cls:
+                mock_runner = MagicMock()
+                mock_runner.run_pipeline = AsyncMock()
+                mock_runner_cls.return_value = mock_runner
+
+                response = await client.post(
+                    "/pipelines",
+                    json={"template": "quick_fix", "title": "Default Model Test", "prompt": "Do the thing"},
+                )
+        finally:
+            # Restore the registry override set by the test_client fixture to avoid leaking state.
+            if original_override is not None:
+                app.dependency_overrides[get_registry] = original_override
+            else:
+                app.dependency_overrides.pop(get_registry, None)
+
+        assert response.status_code == 201
+        pipeline_id = response.json()["id"]
+
+        async with session_factory() as session:
+            result = await session.execute(
+                sa_select(Step).where(Step.pipeline_id == pipeline_id).order_by(Step.order_index)
+            )
+            steps = result.scalars().all()
+
+        # Both steps are for "developer" which has default_model="gpt-4o"
+        assert steps[0].model == "gpt-4o"

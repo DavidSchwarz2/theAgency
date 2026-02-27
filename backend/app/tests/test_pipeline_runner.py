@@ -270,11 +270,11 @@ class TestCurrentSessionId:
 
         captured_session_id: list[str | None] = []
 
-        async def capturing_send(session_id, prompt, agent=None):
+        async def send_message(session_id, prompt, agent=None, model=None):
             captured_session_id.append(runner.current_session_id)
             return make_message_response("output")
 
-        mock_client.send_message.side_effect = capturing_send
+        mock_client.send_message.side_effect = send_message
 
         assert runner.current_session_id is None
         await runner.run_step(step, make_agent_profile(), "prompt")
@@ -296,7 +296,7 @@ class TestRunPipelineSuccess:
 
         call_count = 0
 
-        async def send_message(session_id, prompt, agent=None):
+        async def send_message(session_id, prompt, agent=None, model=None):
             nonlocal call_count
             call_count += 1
             return make_message_response(f"output-{call_count}")
@@ -358,7 +358,7 @@ class TestRunPipelineHandoff:
         pipeline, step1, step2 = two_step_pipeline
         received_prompts: list[str] = []
 
-        async def send_message(session_id, prompt, agent=None):
+        async def send_message(session_id, prompt, agent=None, model=None):
             received_prompts.append(prompt)
             return make_message_response("step-one-output")
 
@@ -476,11 +476,11 @@ class TestResumePipelineHandoff:
         pipeline, step1, step2 = partial_pipeline
         received_prompts: list[str] = []
 
-        async def capturing_send(session_id, prompt, agent=None):
+        async def send_message(session_id, prompt, agent=None, model=None):
             received_prompts.append(prompt)
             return make_message_response("new output")
 
-        mock_client.send_message.side_effect = capturing_send
+        mock_client.send_message.side_effect = send_message
         runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30, registry=mock_registry)
         await runner.resume_pipeline(pipeline, template=None)
 
@@ -531,11 +531,11 @@ class TestResumePipelineNoDoneSteps:
         pipeline, step1, step2 = two_step_pipeline
         received_prompts: list[str] = []
 
-        async def capturing_send(session_id, prompt, agent=None):
+        async def send_message(session_id, prompt, agent=None, model=None):
             received_prompts.append(prompt)
             return make_message_response("output")
 
-        mock_client.send_message.side_effect = capturing_send
+        mock_client.send_message.side_effect = send_message
         runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30, registry=mock_registry)
         await runner.resume_pipeline(pipeline, template=None)
 
@@ -608,7 +608,7 @@ class TestExecuteStepsContextHeader:
         received_prompts: list[str] = []
         call_count = 0
 
-        async def send_message(session_id, prompt, agent=None):
+        async def send_message(session_id, prompt, agent=None, model=None):
             nonlocal call_count
             received_prompts.append(prompt)
             call_count += 1
@@ -639,7 +639,7 @@ class TestExecuteStepsContextHeader:
         pipeline, step1, step2 = two_step_pipeline
         received_prompts: list[str] = []
 
-        async def send_message(session_id, prompt, agent=None):
+        async def send_message(session_id, prompt, agent=None, model=None):
             received_prompts.append(prompt)
             return make_message_response("plain prose output")
 
@@ -754,11 +754,11 @@ class TestResumePipelineContextHeader:
 
         received_prompts: list[str] = []
 
-        async def capturing_send(session_id, prompt, agent=None):
+        async def send_message(session_id, prompt, agent=None, model=None):
             received_prompts.append(prompt)
             return make_message_response("resumed output")
 
-        mock_client.send_message.side_effect = capturing_send
+        mock_client.send_message.side_effect = send_message
         runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30, registry=mock_registry)
         await runner.resume_pipeline(pipeline, template=None)
 
@@ -1034,3 +1034,140 @@ class TestApprovalStepDetection:
             audit = result.scalar_one_or_none()
             assert audit is not None
             assert audit.step_id == step_approval_id
+
+
+# ---------------------------------------------------------------------------
+# Milestone 2 — Step.model ORM column
+# ---------------------------------------------------------------------------
+
+
+class TestStepModelColumn:
+    async def test_step_model_column_nullable(self, db_session: AsyncSession):
+        """Step.model is nullable and defaults to None."""
+        pipeline = Pipeline(
+            title="m2 test",
+            template="t",
+            prompt="p",
+            status=PipelineStatus.pending,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        db_session.add(pipeline)
+        await db_session.flush()
+
+        step = Step(
+            pipeline_id=pipeline.id,
+            agent_name="developer",
+            order_index=0,
+            status=StepStatus.pending,
+        )
+        db_session.add(step)
+        await db_session.commit()
+
+        await db_session.refresh(step)
+        assert step.model is None
+
+    async def test_step_model_column_stores_value(self, db_session: AsyncSession):
+        """Step.model persists a model string."""
+        pipeline = Pipeline(
+            title="m2 test2",
+            template="t",
+            prompt="p",
+            status=PipelineStatus.pending,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        db_session.add(pipeline)
+        await db_session.flush()
+
+        step = Step(
+            pipeline_id=pipeline.id,
+            agent_name="developer",
+            order_index=0,
+            status=StepStatus.pending,
+            model="claude-opus-4-5",
+        )
+        db_session.add(step)
+        await db_session.commit()
+
+        await db_session.refresh(step)
+        assert step.model == "claude-opus-4-5"
+
+
+# ---------------------------------------------------------------------------
+# Milestone 3 — model passed through run_step and _execute_steps
+# ---------------------------------------------------------------------------
+
+
+class TestRunStepModelPropagation:
+    async def test_run_step_passes_model_to_send_message(self, db_session, mock_client, pipeline_and_step):
+        """run_step forwards model kwarg to send_message when provided."""
+        from app.services.pipeline_runner import PipelineRunner
+
+        _, step = pipeline_and_step
+        runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30)
+
+        await runner.run_step(step, make_agent_profile(), "Fix the bug", model="claude-opus-4-5")
+
+        call_kwargs = mock_client.send_message.call_args.kwargs
+        assert call_kwargs.get("model") == "claude-opus-4-5"
+
+    async def test_run_step_passes_model_none_when_not_set(self, db_session, mock_client, pipeline_and_step):
+        """run_step passes model=None to send_message by default."""
+        from app.services.pipeline_runner import PipelineRunner
+
+        _, step = pipeline_and_step
+        runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30)
+
+        await runner.run_step(step, make_agent_profile(), "Fix the bug")
+
+        call_kwargs = mock_client.send_message.call_args.kwargs
+        assert call_kwargs.get("model") is None
+
+
+class TestExecuteStepsModelResolution:
+    async def test_execute_steps_uses_agent_default_model(self, db_session, mock_client, two_step_pipeline):
+        """_execute_steps uses agent.default_model when step.model is None."""
+        from app.services.pipeline_runner import PipelineRunner
+
+        pipeline, step1, _ = two_step_pipeline
+        step1.model = None
+        await db_session.commit()
+
+        registry = MagicMock()
+        agent = AgentProfile(
+            name="developer",
+            description="Test agent",
+            opencode_agent="developer",
+            default_model="gpt-4o",
+        )
+        registry.get_agent.return_value = agent
+
+        runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30, registry=registry)
+        await runner._execute_steps([step1], "prompt", pipeline)
+
+        first_call_kwargs = mock_client.send_message.call_args_list[0].kwargs
+        assert first_call_kwargs.get("model") == "gpt-4o"
+
+    async def test_execute_steps_uses_step_model_over_agent_default(self, db_session, mock_client, two_step_pipeline):
+        """step.model takes precedence over agent.default_model."""
+        from app.services.pipeline_runner import PipelineRunner
+
+        pipeline, step1, _ = two_step_pipeline
+        step1.model = "claude-sonnet"
+        await db_session.commit()
+
+        registry = MagicMock()
+        agent = AgentProfile(
+            name="developer",
+            description="Test agent",
+            opencode_agent="developer",
+            default_model="gpt-4o",
+        )
+        registry.get_agent.return_value = agent
+
+        runner = PipelineRunner(client=mock_client, db=db_session, step_timeout=30, registry=registry)
+        await runner._execute_steps([step1], "prompt", pipeline)
+
+        first_call_kwargs = mock_client.send_message.call_args_list[0].kwargs
+        assert first_call_kwargs.get("model") == "claude-sonnet"

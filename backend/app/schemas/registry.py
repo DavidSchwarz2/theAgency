@@ -11,6 +11,7 @@ class AgentProfile(_RegistryBase):
     name: str
     description: str
     opencode_agent: str
+    default_model: str | None = None
     system_prompt_additions: str = ""
 
 
@@ -20,6 +21,7 @@ class AgentStep(_RegistryBase):
     type: Literal["agent"] = "agent"
     agent: str
     description: str = ""
+    model: str | None = None
 
 
 class ApprovalStep(_RegistryBase):
@@ -85,6 +87,7 @@ class AgentProfileResponse(_ResponseBase):
     name: str
     description: str
     opencode_agent: str
+    default_model: str | None = None
 
 
 class AgentStepResponse(_ResponseBase):

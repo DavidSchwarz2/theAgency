@@ -70,7 +70,7 @@ async def create_pipeline(
     template: PipelineTemplate | None = registry.get_pipeline(body.template)
     if template is None:
         raise HTTPException(
-            status_code=422,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Unknown pipeline template: {body.template!r}",
         )
 
@@ -89,11 +89,17 @@ async def create_pipeline(
 
     for idx, step_def in enumerate(template.steps):
         agent_name = step_def.agent if isinstance(step_def, AgentStep) else APPROVAL_SENTINEL
+        # Resolve model: explicit per-step override first, then agent default.
+        step_model: str | None = (body.step_models or {}).get(idx)
+        if step_model is None and isinstance(step_def, AgentStep):
+            agent_profile = registry.get_agent(step_def.agent)
+            step_model = agent_profile.default_model if agent_profile is not None else None
         step = Step(
             pipeline_id=pipeline.id,
             agent_name=agent_name,
             order_index=idx,
             status=StepStatus.pending,
+            model=step_model,
         )
         db.add(step)
 
@@ -177,6 +183,7 @@ async def get_pipeline(
                 agent_name=step.agent_name,
                 order_index=step.order_index,
                 status=step.status,
+                model=step.model,
                 started_at=step.started_at,
                 finished_at=step.finished_at,
                 latest_handoff=handoff_resp,

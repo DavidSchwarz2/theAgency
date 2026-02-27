@@ -62,6 +62,7 @@ class Step(Base):
     agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
     order_index: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[StepStatus] = mapped_column(Enum(StepStatus), nullable=False, default=StepStatus.pending)
+    model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 

@@ -64,6 +64,7 @@ class PipelineRunner:
         step: Step,
         agent_profile: AgentProfile,
         prompt: str,
+        model: str | None = None,
     ) -> tuple[str, HandoffSchema | None]:
         """Execute one step synchronously.
 
@@ -88,6 +89,7 @@ class PipelineRunner:
                     session_id,
                     prompt=full_prompt,
                     agent=agent_profile.opencode_agent,
+                    model=model,
                 ),
                 timeout=self._step_timeout,
             )
@@ -299,7 +301,13 @@ class PipelineRunner:
                 return
 
             try:
-                output_text, handoff_schema = await self.run_step(step, agent_profile, current_prompt)
+                # The router resolves the model at pipeline creation time and persists it on
+                # Step.model, so `step.model` is the authoritative value in normal operation.
+                # The `or agent_profile.default_model` fallback handles the crash-recovery
+                # (resume_pipeline) path where a step was created before this feature existed.
+                output_text, handoff_schema = await self.run_step(
+                    step, agent_profile, current_prompt, model=step.model or agent_profile.default_model
+                )
                 if handoff_schema is not None:
                     current_prompt = handoff_schema.to_context_header(agent_name=step.agent_name)
                 else:

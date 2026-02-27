@@ -192,6 +192,24 @@ class TestApprovalStepSchema:
         assert isinstance(pipeline.steps[1], ApprovalStep)
 
 
+class TestModelFields:
+    def test_agent_profile_default_model_defaults_to_none(self) -> None:
+        profile = AgentProfile(name="x", description="d", opencode_agent="x")
+        assert profile.default_model is None
+
+    def test_agent_profile_accepts_default_model(self) -> None:
+        profile = AgentProfile(name="x", description="d", opencode_agent="x", default_model="claude-opus-4-5")
+        assert profile.default_model == "claude-opus-4-5"
+
+    def test_agent_step_model_defaults_to_none(self) -> None:
+        step = AgentStep(agent="developer")
+        assert step.model is None
+
+    def test_agent_step_accepts_model(self) -> None:
+        step = AgentStep(agent="developer", model="gpt-4o")
+        assert step.model == "gpt-4o"
+
+
 class TestWatchAndReload:
     async def test_watch_and_reload_triggers_on_file_change(self, tmp_path: Path) -> None:
         agents_path = tmp_path / "agents.yaml"

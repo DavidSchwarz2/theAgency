@@ -12,6 +12,7 @@ class PipelineCreateRequest(BaseModel):
     title: str
     prompt: str
     branch: str | None = None
+    step_models: dict[int, str] | None = None
 
 
 class HandoffResponse(BaseModel):
@@ -35,6 +36,7 @@ class StepStatusResponse(BaseModel):
     agent_name: str
     order_index: int
     status: StepStatus
+    model: str | None = None
     started_at: datetime | None
     finished_at: datetime | None
     latest_handoff: HandoffResponse | None = None
