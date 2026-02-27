@@ -18,6 +18,7 @@ from app.routers import pipelines as pipelines_router
 from app.routers import registry as registry_router
 from app.services.agent_registry import AgentRegistry, watch_and_reload
 from app.services.pipeline_runner import recover_interrupted_pipelines
+from app.services.sse_broker import SseBroker
 
 structlog.configure(
     processors=[
@@ -65,6 +66,12 @@ async def lifespan(app: FastAPI):
     app.state.step_timeout = float(settings.step_timeout_seconds)
     app.state.db_session_factory = AsyncSessionLocal
 
+    # Start SSE broker (fan-out from OpenCode /global/event to browser clients)
+    sse_broker = SseBroker(client=opencode_client)
+    app.state.sse_broker = sse_broker
+    sse_task = asyncio.create_task(sse_broker.start(), name="sse_broker_start")
+    app.state.sse_task = sse_task
+
     # Initialize GitHub client (optional — only when token is configured)
     github_client: GitHubClient | None = GitHubClient(token=settings.github_token) if settings.github_token else None
     app.state.github_client = github_client
@@ -102,6 +109,12 @@ async def lifespan(app: FastAPI):
         task.cancel()
     if app.state.pipeline_tasks:
         await asyncio.gather(*app.state.pipeline_tasks.values(), return_exceptions=True)
+
+    # Shutdown: stop SSE broker
+    await sse_broker.stop()
+    sse_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await sse_task
 
     # Shutdown: stop file watcher
     stop_event.set()

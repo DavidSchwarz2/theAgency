@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
-import type { Pipeline, PipelineStatus, Step, StepStatus } from '@/types/api'
+import type { Pipeline, PipelineDetail, PipelineStatus, Step, StepStatus } from '@/types/api'
 import { useApprovalMutation } from '@/hooks/useApprovalMutation'
+import { useOpenCodeStream } from '@/hooks/useOpenCodeStream'
 import { useRestartMutation } from '@/hooks/useRestartMutation'
 
 // ---------------------------------------------------------------------------
@@ -33,12 +34,42 @@ function StatusBadge({ status }: { status: PipelineStatus }) {
 }
 
 // ---------------------------------------------------------------------------
+// Live output panel (shown while a step is running)
+// ---------------------------------------------------------------------------
+
+function LiveOutputPanel({ lines }: { lines: string[] }) {
+  const bottomRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [lines])
+
+  if (lines.length === 0) return null
+
+  return (
+    <div className="mt-1 ml-2 border-l-2 border-blue-800 pl-3 max-h-48 overflow-y-auto font-mono text-xs text-gray-400">
+      {lines.map((line, i) => (
+        <div key={`${i}:${line}`}>{line}</div>
+      ))}
+      <div ref={bottomRef} />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Step row with expandable handoff
 // ---------------------------------------------------------------------------
 
-function StepRow({ step }: { step: Step }) {
+function StepRow({ step, liveLines }: { step: Step; liveLines?: string[] }) {
   const [expanded, setExpanded] = useState(step.status === 'running')
   const handoff = step.latest_handoff
+
+  // Auto-expand when the step transitions to running.
+  useEffect(() => {
+    if (step.status === 'running') {
+      setExpanded(true)
+    }
+  }, [step.status])
 
   return (
     <div className="text-xs">
@@ -56,6 +87,9 @@ function StepRow({ step }: { step: Step }) {
           </button>
         )}
       </div>
+      {step.status === 'running' && liveLines && liveLines.length > 0 && (
+        <LiveOutputPanel lines={liveLines} />
+      )}
       {expanded && handoff && (
         <div className="mt-1 ml-2 border-l-2 border-gray-700 pl-3">
           {handoff.metadata ? (
@@ -169,8 +203,10 @@ function ApprovalBanner({ pipelineId }: { pipelineId: number }) {
 
 /** Props accept a Pipeline (from list endpoint) or a PipelineDetail (from detail endpoint).
  *  Steps are shown only when present, as the list endpoint omits them. */
-export default function PipelineCard({ pipeline }: { pipeline: Pipeline & { steps?: Step[] } }) {
-  const sortedSteps = [...(pipeline.steps ?? [])].sort((a, b) => a.order_index - b.order_index)
+export default function PipelineCard({ pipeline }: { pipeline: Pipeline | PipelineDetail }) {
+  const sortedSteps = [...('steps' in pipeline ? pipeline.steps : [])].sort((a, b) => a.order_index - b.order_index)
+  const hasRunningStep = sortedSteps.some((s) => s.status === 'running')
+  const liveLines = useOpenCodeStream(hasRunningStep)
 
   return (
     <article className="rounded-lg border border-gray-800 bg-gray-900 p-4">
@@ -185,7 +221,7 @@ export default function PipelineCard({ pipeline }: { pipeline: Pipeline & { step
       {sortedSteps.length > 0 && (
         <div className="space-y-1 mb-3">
           {sortedSteps.map((step) => (
-            <StepRow key={step.id} step={step} />
+            <StepRow key={step.id} step={step} liveLines={step.status === 'running' ? liveLines : undefined} />
           ))}
         </div>
       )}
